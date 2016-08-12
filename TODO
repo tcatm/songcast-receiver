@@ -1,0 +1,41 @@
+# Features
+
+- [X] query preset
+- [X] either play by URI (both OHZ and OHU/OHM)
+- [X] adjust latency correctly
+- [X] detect samplerate/format changes and re-open pulseaudio stream appropiately
+- [X] finish preset parsing
+- [X] OHU forwarding
+- [ ] clean shutdown on ctrl-c, send leave message
+- [ ] display codec name
+- [ ] display track and metadata
+- [ ] set pulseaudio input name to something meaningful
+- [ ] if ohz: continually listen for matching zone uri messages and switch if changed
+
+# Usage
+
+songcast-receiver { -p preset | -u URI } [ -i interface ]
+
+# Program flow
+
+## Preset
+
+- automagically select best interface (the first with a public v4)
+- receive preset info
+- extract URI
+
+## URI
+
+### OHZ
+
+- resolve OHZ to OHU/OHM
+
+### OHU/OHM
+
+- send join/listen message
+- open connection to pulseaudio
+- play audio
+
+Ein Frame spielt für framesize/rate * 1000 Millisekunden.
+Ich will den Buffer für latency Millisekunden füllen.
+Ich brauche also (latency * framesize)/(rate / 1000) Bytes an Buffer.
