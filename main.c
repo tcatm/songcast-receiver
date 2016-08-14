@@ -304,7 +304,7 @@ void resolve_ohz(struct uri *uri) {
 
 int latency_to_ms(int samplerate, int latency) {
 	int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
-	return latency * 1000 / (256 * multiplier);
+	return (unsigned long long int)latency * 1000 / (256 * multiplier);
 }
 
 void play_frame(ohm1_audio *frame) {
