@@ -345,7 +345,7 @@ void play_frame(ohm1_audio *frame) {
 		.tlength = 2 * (latency * framesize) * (ss.rate / 1000)
 	};
 
-	if ((!pa_sample_spec_equal(&current_ss, &ss) || frame_delta > 1) && pa_stream != NULL) {
+	if ((!pa_sample_spec_equal(&current_ss, &ss)) && pa_stream != NULL) {
 		printf("Draining.\n");
 		pa_simple_drain(pa_stream, NULL);
 		pa_simple_free(pa_stream);
@@ -361,6 +361,8 @@ void play_frame(ohm1_audio *frame) {
 
 	void *audio = frame->data + frame->codec_length;
 	size_t audio_length = frame->channels * frame->bitdepth * htons(frame->samplecount) / 8;
+
+	printf("frame flags %i frame %i audio_length %zi codec %.*s\n", frame->flags, ntohl(frame->frame), audio_length, frame->codec_length, frame->data);
 
 	pa_simple_write(pa_stream, audio, audio_length, NULL);
 
@@ -432,7 +434,7 @@ void play_uri(struct uri *uri) {
 		struct sockaddr_in src = {
 			.sin_family = AF_INET,
 			.sin_port = htons(uri->port),
-			.sin_addr.s_addr = htonl(INADDR_ANY)
+			.sin_addr.s_addr = inet_addr(uri->host)
 		};
 
 		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0)
@@ -513,6 +515,12 @@ void play_uri(struct uri *uri) {
 					break;
 			}
 
+		struct {
+			ohm1_header hdr;
+			uint32_t count;
+			uint32_t frames[];
+		} *lost = buf;
+
 		switch (hdr->type) {
 			case OHM1_LEAVE:
 			case OHM1_JOIN:
@@ -534,6 +542,10 @@ void play_uri(struct uri *uri) {
 			case OHM1_SLAVE:
 				update_slaves((void *)buf);
 				break;
+			case 7:
+				for (int i = 0; i < ntohl(lost->count); i++) {
+					printf("lost frame %i\n", ntohl(lost->frames[i]));
+				}
 			default:
 				printf("Type %i not handled yet\n", hdr->type);
 		}
