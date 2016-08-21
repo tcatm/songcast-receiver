@@ -336,6 +336,11 @@ void play_frame(ohm1_audio *frame) {
 	}
 
 	int latency = latency_to_ms(ss.rate, htonl(frame->media_latency));
+
+	// Latency correction. Assume about 3ms network + 5ms additional soundcard latency.
+	//latency += 16;
+
+	//printf("latency %ims\n", latency);
 	size_t framesize = pa_frame_size(&ss);
 
 	pa_buffer_attr bufattr = {
@@ -451,7 +456,7 @@ void play_uri(struct uri *uri) {
 			error(1, 0, "Could not join multicast group");
 	}
 
-  uint8_t buf[4096];
+  uint8_t buf[8192];
 
 	struct timeval timeout = {
 		.tv_usec = 100000
