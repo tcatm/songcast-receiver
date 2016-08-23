@@ -13,11 +13,11 @@
 #include <libxml/xpath.h>
 #include <uriparser/Uri.h>
 #include <time.h>
-#include <pulse/simple.h>
 
 #include "timespec.h"
 #include "ohz_v1.h"
 #include "ohm_v1.h"
+#include "player.h"
 
 void open_uri(char *uri_string);
 
@@ -302,84 +302,6 @@ void resolve_ohz(struct uri *uri) {
 	// de-dup socket code with presety_y_ foo
 }
 
-int latency_to_ms(int samplerate, int latency) {
-	int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
-	return (unsigned long long int)latency * 1000 / (256 * multiplier);
-}
-
-void play_frame(ohm1_audio *frame) {
-	static pa_simple *pa_stream = NULL;
-	static pa_sample_spec current_ss;
-	static int last_frame = 0;
-
-	pa_sample_spec ss = {
-		.rate = htonl(frame->samplerate),
-		.channels = frame->channels
-	};
-
-	int this_frame = htonl(frame->frame);
-	int frame_delta = this_frame - last_frame;
-	last_frame = this_frame;
-
-	if (frame_delta < 1)
-		return;
-
-	switch (frame->bitdepth) {
-		case 24:
-			ss.format = PA_SAMPLE_S24BE;
-			break;
-		case 16:
-			ss.format = PA_SAMPLE_S16BE;
-			break;
-		default:
-			error(1, 0, "Unsupported bit depth %i\n", frame->bitdepth);
-	}
-
-	int latency = latency_to_ms(ss.rate, htonl(frame->media_latency));
-
-	// Latency correction. Assume about 3ms network + 5ms additional soundcard latency.
-	//latency += 16;
-
-	//printf("latency %ims\n", latency);
-	size_t framesize = pa_frame_size(&ss);
-
-	pa_buffer_attr bufattr = {
-		.maxlength = -1,
-		.minreq = -1,
-		.prebuf = -1,
-		.tlength = 2 * (latency * framesize) * (ss.rate / 1000)
-	};
-
-	if ((!pa_sample_spec_equal(&current_ss, &ss)) && pa_stream != NULL) {
-		printf("Draining.\n");
-		pa_simple_drain(pa_stream, NULL);
-		pa_simple_free(pa_stream);
-		pa_stream = NULL;
-	}
-
-	if (pa_stream == NULL) {
-		printf("Start stream.\n");
-		pa_stream = pa_simple_new(NULL, "Songcast Receiver", PA_STREAM_PLAYBACK,
-		                          NULL, "Songcast Receiver", &ss, NULL, &bufattr, NULL);
-		current_ss = ss;
-	}
-
-	void *audio = frame->data + frame->codec_length;
-	size_t audio_length = frame->channels * frame->bitdepth * htons(frame->samplecount) / 8;
-
-	printf("frame flags %i frame %i audio_length %zi codec %.*s\n", frame->flags, ntohl(frame->frame), audio_length, frame->codec_length, frame->data);
-
-	pa_simple_write(pa_stream, audio, audio_length, NULL);
-
-	if (frame->flags & OHM1_FLAG_HALT) {
-		printf("HALT received. Draining stream.\n");
-		pa_simple_drain(pa_stream, NULL);
-		pa_simple_free(pa_stream);
-		pa_stream = NULL;
-		return;
-	}
-}
-
 void ohm_send_event(int fd, struct uri *uri, int event) {
 	struct sockaddr_in dst = {
 		.sin_family = AF_INET,
@@ -536,7 +458,7 @@ void play_uri(struct uri *uri) {
 					clock_gettime(CLOCK_MONOTONIC, &last_listen);
 				break;
 			case OHM1_AUDIO:
-				play_frame((void*)buf);
+				handle_frame((void*)buf);
 				break;
 			case OHM1_TRACK:
 				dump_track((void *)buf);

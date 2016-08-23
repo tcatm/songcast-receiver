@@ -7,6 +7,7 @@
 - [X] finish preset parsing
 - [X] OHU forwarding
 - [ ] port to async API
+- [ ] init/destroy for player.c (also to handle null uri)
 - [ ] PA_STREAM_ADJUST_LATENCY
 - [ ] if buffer runs down to 20ms, fade off?
 - [ ] fade in once buffer is 100% filled again
@@ -25,3 +26,4 @@
 - [ ] display codec name
 - [ ] display track and metadata
 - [ ] set pulseaudio input name to something meaningful
+- [ ] create new stream with different sample spec in advance by scanning for changes in buffer?
