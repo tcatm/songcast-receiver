@@ -14,5 +14,11 @@ struct audio_frame {
   bool halt;
 };
 
+struct cache {
+  struct audio_frame *frame;
+  struct cache *next;
+  struct cache *prev;
+};
+
 void player_stop(void);
 void handle_frame(ohm1_audio *frame);

@@ -6,6 +6,7 @@
 - [X] detect samplerate/format changes and re-open pulseaudio stream appropiately
 - [X] finish preset parsing
 - [X] OHU forwarding
+- [ ] build code for managing missed frames. sorted list of integers?
 - [ ] port to async API
 - [ ] init/destroy for player.c (also to handle null uri)
 - [ ] PA_STREAM_ADJUST_LATENCY
@@ -27,3 +28,4 @@
 - [ ] display track and metadata
 - [ ] set pulseaudio input name to something meaningful
 - [ ] create new stream with different sample spec in advance by scanning for changes in buffer?
+- [ ] tolerate some amount of out-of-order frames? i.e. wait a few frames before sending resend requests?

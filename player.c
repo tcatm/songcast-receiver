@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "player.h"
 
@@ -15,6 +16,7 @@ struct {
 
 // prototypes
 void play_frame(struct audio_frame *frame);
+bool process_frame(struct audio_frame *frame);
 
 // functions
 int latency_helper(int samplerate, int latency) {
@@ -113,19 +115,30 @@ void handle_frame(ohm1_audio *frame) {
   if (aframe == NULL)
     return;
 
-  if (aframe->seqnum == G.last_frame + 1 || G.last_frame == 0) {
-    // next frame. play immediately
-    play_frame(aframe);
-    G.last_frame = aframe->seqnum;
+  // TODO remove seqnum from list of missed frames
 
+  bool ret = process_frame(aframe);
+
+  if (ret) {
     free_frame(aframe);
-  } else if (aframe->seqnum < G.last_frame) {
-     // ignore old frames
-    return;
+    // discard any missing frames before aframe->seqnum
+    // Try pulling frames from the cache in a loop.
+    // How many?
+    // Does it suffice for process_frame() to block in case of overruns?
   } else {
     printf("Gap! %i\n", aframe->seqnum - G.last_frame - 1);
-    G.last_frame = 0;
+    for (unsigned int i = G.last_frame + 1; i < aframe->seqnum; i++) {
+      printf("Missing %i\n", i);
+      // add to missing list if not present
+      // send resend requests
+      // there should be an upper limit here. maybe about 40 missing frames?
+    }
+    // add frame to cache
+    // add all missing seqnums to list of missed frames
+
+    // only add to missed frames here?
     // cache could be a linked list
+    // need list of missed frames
     // insertion sort?
     // skipped frame
     // TODO put to cache
@@ -150,6 +163,21 @@ void handle_frame(ohm1_audio *frame) {
   }
 
   // TODO try pull from cache
+  // What to do on buffer overruns? Fade out as much as possible?
+}
+
+// Tries to process a single frame.
+// \return        true  - frame was consumed and can be freed
+//                false - there is a gap. this frame might fit at a later point
+bool process_frame(struct audio_frame *frame) {
+  if (frame->seqnum == G.last_frame + 1 || G.last_frame == 0) {
+    // This is the next frame. Play it.
+    play_frame(frame);
+    G.last_frame = frame->seqnum;
+    return true;
+  }
+
+  return frame->seqnum < G.last_frame;
 }
 
 void play_frame(struct audio_frame *frame) {
