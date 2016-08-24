@@ -469,10 +469,8 @@ void play_uri(struct uri *uri) {
 			case OHM1_SLAVE:
 				update_slaves((void *)buf);
 				break;
-			case 7:
-				for (int i = 0; i < ntohl(lost->count); i++) {
-					printf("lost frame %i\n", ntohl(lost->frames[i]));
-				}
+			case OHM1_RESEND_REQUEST:
+				break;
 			default:
 				printf("Type %i not handled yet\n", hdr->type);
 		}

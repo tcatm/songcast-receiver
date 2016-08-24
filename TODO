@@ -29,3 +29,15 @@
 - [ ] set pulseaudio input name to something meaningful
 - [ ] create new stream with different sample spec in advance by scanning for changes in buffer?
 - [ ] tolerate some amount of out-of-order frames? i.e. wait a few frames before sending resend requests?
+
+
+# Buffer underrun handling
+
+Always keep the last 20ms of continuous audio in a separate buffer.
+If a buffer underrun approaches, calculate fadeout for this 20ms sample
+and rewrite the audio buffer.
+
+After an underrun, reset the prebuf to 100% and start filling the buffer
+once it can be fully filled again from the heap. Render 20ms fade-in in this case.
+
+Or maybe this gets to complicated using pulseaudio?
