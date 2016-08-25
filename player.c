@@ -152,10 +152,12 @@ void handle_frame(ohm1_audio *frame) {
 }
 
 void process_frame(struct audio_frame *frame) {
-  printf("Handling frame %i\n", frame->seqnum);
+  printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
 
-  if (frame->seqnum <= G.last_played)
+  if (frame->seqnum <= G.last_played) {
+    free_frame(frame);
     return;
+  }
 
   if (frame->seqnum == G.last_played + 1 || G.last_played == 0) {
     // This is the next frame. Play it.
@@ -187,8 +189,10 @@ void process_frame(struct audio_frame *frame) {
   }
 
   // Frame is too old to be cached.
-  if (frame->seqnum < (long long int)G.last_received - CACHE_SIZE)
+  if (frame->seqnum < (long long int)G.last_received - CACHE_SIZE) {
+    free_frame(frame);
     return;
+  }
 
   if (frame->seqnum > G.last_received) {
     printf("Frame from the future %i.\n", frame->seqnum);

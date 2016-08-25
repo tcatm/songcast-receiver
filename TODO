@@ -60,8 +60,6 @@ be freed.
 
 Any NULLs between last_played and last_received must be requested.
 
-missingframes.c/h entfernen
-
 struct {
   bool missing;
   struct audio_frame *frame;
