@@ -144,7 +144,7 @@ struct missing_frames *handle_frame(ohm1_audio *frame) {
   struct audio_frame *aframe = parse_frame(frame);
 
   if (aframe == NULL)
-    return;
+    return NULL;
 
   process_frame(aframe);
 
