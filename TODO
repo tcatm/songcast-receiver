@@ -30,6 +30,7 @@
 - [ ] tolerate some amount of out-of-order frames? i.e. wait a few frames before sending resend requests?
 - [ ] ohm send event could share code with ohm_send_resend_request
 - [ ] read complete source, read all comments, cleanup
+- [ ] CHECK_DEAD_GOTO aus simple.c übernehmen
 
 # Buffer underrun handling
 

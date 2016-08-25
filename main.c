@@ -440,6 +440,7 @@ void play_uri(struct uri *uri) {
 
 		// TODO determine whether to send listen here
 		ssize_t n = recv(fd, buf, sizeof(buf), 0);
+		clock_gettime(CLOCK_MONOTONIC, &now);
 
 		if (n < 0) {
 			if (errno == EAGAIN)
@@ -485,7 +486,7 @@ void play_uri(struct uri *uri) {
 					clock_gettime(CLOCK_MONOTONIC, &last_listen);
 				break;
 			case OHM1_AUDIO:
-				missing = handle_frame((void*)buf);
+				missing = handle_frame((void*)buf, &now);
 
 				if (missing)
 					ohm_send_resend_request(fd, uri, missing);

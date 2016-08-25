@@ -28,4 +28,4 @@ struct missing_frames {
 
 void player_init(void);
 void player_stop(void);
-struct missing_frames *handle_frame(ohm1_audio *frame);
+struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts);

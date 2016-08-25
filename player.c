@@ -1,18 +1,21 @@
 #include <arpa/inet.h>
-#include <pulse/simple.h>
+#include <pulse/pulseaudio.h>
 #include <error.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <time.h>
 
 #include "player.h"
 
 #define CACHE_SIZE 50
 
 struct {
-  pa_simple *pa_stream;
+  pa_threaded_mainloop *mainloop;
+  pa_context *context;
+  pa_stream *stream;
   pa_sample_spec ss;
   unsigned int last_played;
   unsigned int last_received;
@@ -20,8 +23,8 @@ struct {
 } G = {};
 
 // prototypes
-void play_frame(struct audio_frame *frame);
-void process_frame(struct audio_frame *frame);
+void play_frame(struct audio_frame *frame, struct timespec *ts);
+void process_frame(struct audio_frame *frame, struct timespec *ts);
 
 // functions
 int latency_helper(int samplerate, int latency) {
@@ -29,28 +32,105 @@ int latency_helper(int samplerate, int latency) {
   return ((unsigned long long int)latency * samplerate) / (256 * multiplier);
 }
 
+void context_state_cb(pa_context* context, void* mainloop) {
+  pa_threaded_mainloop_signal(mainloop, 0);
+}
+
+void stream_state_cb(pa_stream *s, void *mainloop) {
+  pa_threaded_mainloop_signal(mainloop, 0);
+}
+
+void stream_write_cb(pa_stream *stream, size_t size, void *mainloop) {
+  pa_threaded_mainloop_signal(mainloop, 0);
+}
+
+void stream_success_cb(pa_stream *stream, int success, void *userdata) {
+  return;
+}
+
 void player_init(void) {
+  G.stream = NULL;
   G.last_played = 0;
   G.last_received = 0;
+  G.mainloop = pa_threaded_mainloop_new();
+  assert(G.mainloop);
+
+  G.context = pa_context_new(pa_threaded_mainloop_get_api(G.mainloop), "Songcast Receiver");
+  assert(G.context);
+
+  pa_context_set_state_callback(G.context, &context_state_cb, G.mainloop);
+
+  pa_threaded_mainloop_lock(G.mainloop);
+
+  // Start the mainloop
+  assert(pa_threaded_mainloop_start(G.mainloop) == 0);
+  assert(pa_context_connect(G.context, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) == 0);
+
+  // Wait for the context to be ready
+  while (true) {
+      pa_context_state_t context_state = pa_context_get_state(G.context);
+
+      if (context_state == PA_CONTEXT_READY)
+        break;
+
+      assert(PA_CONTEXT_IS_GOOD(context_state));
+
+      pa_threaded_mainloop_wait(G.mainloop);
+  }
+
+  pa_threaded_mainloop_unlock(G.mainloop);
 }
 
 void player_stop(void) {
   // TODO stop the player
+  // TODO tear down pulse
 }
 
 void drain(void) {
   printf("Draining.\n");
 
-  if (G.pa_stream == NULL)
+  if (G.stream == NULL)
     return;
 
-  pa_simple_drain(G.pa_stream, NULL);
-  pa_simple_free(G.pa_stream);
+
+  printf("Draining not yet implemented!\n");
+  assert(false);
+
+/*
+    pa_operation *o = NULL;
+
+  pa_assert(p);
+
+
+  pa_threaded_mainloop_lock(p->mainloop);
+  CHECK_DEAD_GOTO(p, rerror, unlock_and_fail);
+
+  o = pa_stream_drain(p->stream, success_cb, p);
+  CHECK_SUCCESS_GOTO(p, rerror, o, unlock_and_fail);
+
+  p->operation_success = 0;
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING) {
+      pa_threaded_mainloop_wait(p->mainloop);
+      CHECK_DEAD_GOTO(p, rerror, unlock_and_fail);
+  }
+  CHECK_SUCCESS_GOTO(p, rerror, p->operation_success, unlock_and_fail);
+
+  pa_operation_unref(o);
+  pa_threaded_mainloop_unlock(p->mainloop);
+
+  pa_simple_drain(G.stream, NULL);
+  pa_simple_free(G.stream);
   G.pa_stream = NULL;
+  */
 }
 
 void create_stream(pa_sample_spec *ss, int latency) {
   printf("Start stream.\n");
+
+  pa_threaded_mainloop_lock(G.mainloop);
+
+  pa_channel_map map;
+  assert(pa_channel_map_init_auto(&map, ss->channels, PA_CHANNEL_MAP_DEFAULT));
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -59,8 +139,27 @@ void create_stream(pa_sample_spec *ss, int latency) {
     .tlength = 2 * latency_helper(ss->rate, latency) * pa_frame_size(ss),
   };
 
-	G.pa_stream = pa_simple_new(NULL, "Songcast Receiver", PA_STREAM_PLAYBACK,
-	                            NULL, "Songcast Receiver", ss, NULL, &bufattr, NULL);
+  G.stream = pa_stream_new(G.context, "Songcast Receiver", ss, &map);
+  pa_stream_set_state_callback(G.stream, stream_state_cb, G.mainloop);
+  pa_stream_set_write_callback(G.stream, stream_write_cb, G.mainloop);
+
+  pa_stream_flags_t stream_flags;
+  stream_flags = PA_STREAM_START_CORKED | PA_STREAM_NOT_MONOTONIC |
+                 PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
+
+  // Connect stream to the default audio output sink
+  assert(pa_stream_connect_playback(G.stream, NULL, &bufattr, stream_flags, NULL, NULL) == 0);
+
+  // Wait for the stream to be ready
+  while (true) {
+      pa_stream_state_t stream_state = pa_stream_get_state(G.stream);
+      assert(PA_STREAM_IS_GOOD(stream_state));
+      if (stream_state == PA_STREAM_READY) break;
+      pa_threaded_mainloop_wait(G.mainloop);
+  }
+
+  pa_threaded_mainloop_unlock(G.mainloop);
+
 	G.ss = *ss;
 }
 
@@ -140,13 +239,13 @@ struct missing_frames *request_frames(void) {
   return d;
 }
 
-struct missing_frames *handle_frame(ohm1_audio *frame) {
+struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   struct audio_frame *aframe = parse_frame(frame);
 
   if (aframe == NULL)
     return NULL;
 
-  process_frame(aframe);
+  process_frame(aframe, ts);
 
   // Don't send resend requests when the frame was an answer.
   if (!aframe->resent)
@@ -155,8 +254,8 @@ struct missing_frames *handle_frame(ohm1_audio *frame) {
   return NULL;
 }
 
-void process_frame(struct audio_frame *frame) {
-  printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
+void process_frame(struct audio_frame *frame, struct timespec *ts) {
+  //printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
 
   if (frame->seqnum <= G.last_played) {
     free_frame(frame);
@@ -165,8 +264,8 @@ void process_frame(struct audio_frame *frame) {
 
   if (frame->seqnum == G.last_played + 1 || G.last_played == 0) {
     // This is the next frame. Play it.
-    printf("Playing %i                       ==== PLAY ===\n", frame->seqnum);
-    play_frame(frame);
+    //printf("Playing %i                       ==== PLAY ===\n", frame->seqnum);
+    play_frame(frame, ts);
 
     int start = G.last_played + CACHE_SIZE - (long long int)G.last_received;
     if (start < 0)
@@ -178,14 +277,14 @@ void process_frame(struct audio_frame *frame) {
       if (cframe == NULL)
         break;
 
-      printf("Cache frame %i, expecting %i\n", cframe->seqnum, G.last_played + 1);
+      //printf("Cache frame %i, expecting %i\n", cframe->seqnum, G.last_played + 1);
 
       if (cframe->seqnum != G.last_played + 1)
         break;
 
       printf("Playing from cache %i\n", cframe->seqnum);
 
-      play_frame(cframe);
+      play_frame(cframe, NULL);
       G.cache[i] = NULL;
     }
 
@@ -228,16 +327,51 @@ void process_frame(struct audio_frame *frame) {
     free_frame(frame);
 }
 
-void play_frame(struct audio_frame *frame) {
+void play_data(const void *data, size_t length) {
+  pa_threaded_mainloop_lock(G.mainloop);
+
+  while (length > 0) {
+      size_t l;
+      int r;
+
+      while (!(l = pa_stream_writable_size(G.stream)))
+          pa_threaded_mainloop_wait(G.mainloop);
+
+      if (l > length)
+          l = length;
+
+      r = pa_stream_write(G.stream, data, l, NULL, 0LL, PA_SEEK_RELATIVE);
+
+      data = (const uint8_t*) data + l;
+      length -= l;
+  }
+
+  pa_threaded_mainloop_unlock(G.mainloop);
+}
+
+void play_frame(struct audio_frame *frame, struct timespec *ts) {
 //    printf("frame halt %i frame %i audio_length %zi\n", frame->halt, frame->seqnum, frame->audio_length);
+  static bool first = false;
 
 	if (!pa_sample_spec_equal(&G.ss, &frame->ss))
     drain();
 
-	if (G.pa_stream == NULL)
+	if (G.stream == NULL) {
     create_stream(&frame->ss, frame->latency);
+    first = true;
+  }
 
-	pa_simple_write(G.pa_stream, frame->audio, frame->audio_length, NULL);
+	play_data(frame->audio, frame->audio_length);
+
+  if (ts != NULL && first) {
+    first = false;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double diff = now.tv_sec - ts->tv_sec + (now.tv_nsec - ts->tv_nsec) / 1e9;
+    printf("delay %gms\n", diff * 1e3);
+
+    pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
+  }
 
 	if (frame->halt)
     drain();
