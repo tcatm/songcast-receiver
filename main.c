@@ -21,9 +21,6 @@
 
 void open_uri(char *uri_string);
 
-int ohm_fd;
-struct uri *ohm_uri;
-
 char *resolve_preset(int preset) {
 	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
@@ -305,7 +302,7 @@ void resolve_ohz(struct uri *uri) {
 	// de-dup socket code with presety_y_ foo
 }
 
-void ohm_send_event(int fd, struct uri *uri, int event) {
+void ohm_send_event(int fd, const struct uri *uri, int event) {
 	struct sockaddr_in dst = {
 		.sin_family = AF_INET,
 		.sin_port = htons(uri->port),
@@ -323,17 +320,14 @@ void ohm_send_event(int fd, struct uri *uri, int event) {
 		error(1, errno, "Could not send message");
 }
 
-void ohm_send_resend_request(unsigned int seqnums[], int count) {
-	if (count == 0)
-		return;
-
+void ohm_send_resend_request(int fd, const struct uri *uri, const struct missing_frames *missing) {
 	struct sockaddr_in dst = {
 		.sin_family = AF_INET,
-		.sin_port = htons(ohm_uri->port),
-		.sin_addr.s_addr = inet_addr(ohm_uri->host)
+		.sin_port = htons(uri->port),
+		.sin_addr.s_addr = inet_addr(uri->host)
 	};
 
-	size_t size = sizeof(ohm1_resend_request) + sizeof(uint32_t) * count;
+	size_t size = sizeof(ohm1_resend_request) + sizeof(uint32_t) * missing->count;
 	ohm1_resend_request *msg = calloc(1, size);
 	msg->hdr = (ohm1_header) {
 		.signature = "Ohm ",
@@ -342,14 +336,14 @@ void ohm_send_resend_request(unsigned int seqnums[], int count) {
 		.length = htons(size)
 	};
 
-	msg->count = htonl(count);
+	msg->count = htonl(missing->count);
 
-	for (int i = 0; i < count; i++) {
-		printf("Requesting %i\n", seqnums[i]);
-		msg->seqnums[i] = htonl(seqnums[i]);
+	for (int i = 0; i < missing->count; i++) {
+		printf("Requesting %i\n", missing->seqnums[i]);
+		msg->seqnums[i] = htonl(missing->seqnums[i]);
 	}
 
-	if (sendto(ohm_fd, msg, size, 0, (const struct sockaddr*) &dst, sizeof(dst)) < 0)
+	if (sendto(fd, msg, size, 0, (const struct sockaddr*) &dst, sizeof(dst)) < 0)
 		error(1, errno, "Could not send message");
 
 	free(msg);
@@ -422,9 +416,6 @@ void play_uri(struct uri *uri) {
 	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
 		error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
 
-	ohm_fd = fd;
-	ohm_uri = uri;
-
 	ohm_send_event(fd, uri, OHM1_JOIN);
 	ohm_send_event(fd, uri, OHM1_LISTEN);
 
@@ -432,6 +423,8 @@ void play_uri(struct uri *uri) {
 	clock_gettime(CLOCK_MONOTONIC, &last_listen);
 
 	player_init();
+
+	struct missing_frames *missing;
 
 	while (1) {
 		struct timespec now;
@@ -492,7 +485,12 @@ void play_uri(struct uri *uri) {
 					clock_gettime(CLOCK_MONOTONIC, &last_listen);
 				break;
 			case OHM1_AUDIO:
-				handle_frame((void*)buf);
+				missing = handle_frame((void*)buf);
+
+				if (missing)
+					ohm_send_resend_request(fd, uri, missing);
+
+				free(missing);
 				break;
 			case OHM1_TRACK:
 				dump_track((void *)buf);

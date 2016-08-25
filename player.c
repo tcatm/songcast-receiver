@@ -8,9 +8,8 @@
 #include <assert.h>
 
 #include "player.h"
-#include "main.h"
 
-#define CACHE_SIZE 200
+#define CACHE_SIZE 50
 
 struct {
   pa_simple *pa_stream;
@@ -121,9 +120,9 @@ void free_frame(struct audio_frame *frame) {
   free(frame);
 }
 
-void request_frames(void) {
-  unsigned int seqnums[CACHE_SIZE];
-  int count = 0;
+struct missing_frames *request_frames(void) {
+  struct missing_frames *d = calloc(1, sizeof(struct missing_frames) + sizeof(unsigned int) * CACHE_SIZE);
+  assert(d != NULL);
 
   int start = G.last_played + CACHE_SIZE - (long long int)G.last_received;
   if (start < 0)
@@ -131,12 +130,17 @@ void request_frames(void) {
 
   for (int i = start; i < CACHE_SIZE; i++)
     if (G.cache[i] == NULL)
-      seqnums[count++] = (long long int)G.last_received - CACHE_SIZE + i + 1;
+      d->seqnums[d->count++] = (long long int)G.last_received - CACHE_SIZE + i + 1;
 
-  ohm_send_resend_request(seqnums, count);
+  if (d->count == 0) {
+    free(d);
+    return NULL;
+  }
+
+  return d;
 }
 
-void handle_frame(ohm1_audio *frame) {
+struct missing_frames *handle_frame(ohm1_audio *frame) {
   struct audio_frame *aframe = parse_frame(frame);
 
   if (aframe == NULL)
@@ -146,9 +150,9 @@ void handle_frame(ohm1_audio *frame) {
 
   // Don't send resend requests when the frame was an answer.
   if (!aframe->resent)
-    request_frames();
+    return request_frames();
 
-  // TODO could handle_frame return a list of missing frames instead of using callbacks?
+  return NULL;
 }
 
 void process_frame(struct audio_frame *frame) {

@@ -21,6 +21,11 @@ struct cache {
   struct cache *prev;
 };
 
+struct missing_frames {
+  int count;
+  unsigned int seqnums[];
+};
+
 void player_init(void);
 void player_stop(void);
-void handle_frame(ohm1_audio *frame);
+struct missing_frames *handle_frame(ohm1_audio *frame);
