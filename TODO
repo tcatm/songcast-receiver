@@ -6,22 +6,20 @@
 - [X] detect samplerate/format changes and re-open pulseaudio stream appropiately
 - [X] finish preset parsing
 - [X] OHU forwarding
-- [ ] build code for managing missed frames. sorted list of integers?
-- [ ] ohm send event could share code with ohm_send_resend_request
+- [X] handle out of order packets (epoll might help). Use a heap to store frames when previous frames are missing.
+- [X] implement resend request
+- [X] build code for managing missed frames. sorted list of integers?
 - [ ] port to async API
 - [ ] init/destroy for player.c (also to handle null uri)
 - [ ] PA_STREAM_ADJUST_LATENCY
 - [ ] if buffer runs down to 20ms, fade off?
 - [ ] fade in once buffer is 100% filled again
-- [ ] handle out of order packets (epoll might help). Use a heap to store frames when previous frames are missing.
-- [ ] implement resend request
 - [ ] clean shutdown on ctrl-c, send leave message
 - [ ] if ohz: continually listen for matching zone uri messages and switch if changed
 - [ ] actually close sockets! (ohz)
 - [ ] synchronize playback by tweaking the samplerate a little (less then 0.1%)
 - [ ] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [ ] send join until track and metatext is received. adhere to flow diagram
-- [ ] port to c++? just for learning?
 - [ ] check whether destination multicast group matches
 - [ ] determine how much of the buffer we control and how much is up to pulseaudio (for resents)
 - [ ] can we use linux network timestamps?
@@ -30,7 +28,8 @@
 - [ ] set pulseaudio input name to something meaningful
 - [ ] create new stream with different sample spec in advance by scanning for changes in buffer?
 - [ ] tolerate some amount of out-of-order frames? i.e. wait a few frames before sending resend requests?
-
+- [ ] ohm send event could share code with ohm_send_resend_request
+- [ ] read complete source, read all comments, cleanup
 
 # Buffer underrun handling
 
@@ -44,23 +43,6 @@ once it can be fully filled again from the heap. Render 20ms fade-in in this cas
 Or maybe this gets to complicated using pulseaudio?
 
 
-# Handling of missing packets
+# Start Handling
 
-In general, we're only concerned with the last X (e.g. 50) frames.
-We'll keep a fixed size array with pointers to struct audio_frame entries.
-Played frames will be reset to NULL.
-We'll also keep track of the seqnum of the last frame, so that
-each entry can be indexed by its seqnum.
-Arriving frames will be added at the appropiate location.
-If they are too old, they'll be ignored.
-If they are older than the last played frame, they'll be ignored, too.
-If the frame has a higher seqnum than the end of the array, the array
-will be shifted. Before shifting, every seqnum that would be removed, will
-be freed.
-
-Any NULLs between last_played and last_received must be requested.
-
-struct {
-  bool missing;
-  struct audio_frame *frame;
-};
+Start stream corked. Fill buffer. Set readpointer. Uncork.
