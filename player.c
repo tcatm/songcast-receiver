@@ -87,6 +87,7 @@ void player_stop(void) {
 }
 
 void drain(void) {
+  // TODO in which cases do we need to drain the stream at all?
   printf("Draining.\n");
 
   if (G.stream == NULL)
@@ -369,6 +370,10 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     double diff = now.tv_sec - ts->tv_sec + (now.tv_nsec - ts->tv_nsec) / 1e9;
     printf("delay %gms\n", diff * 1e3);
+
+    // TODO figure out how much time we have until we need to uncork
+    // TODO figure out network latency
+    // TODO calculate exact pre-buffer latency
 
     pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
   }
