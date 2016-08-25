@@ -28,7 +28,7 @@ void process_frame(struct audio_frame *frame, struct timespec *ts);
 
 // functions
 int latency_helper(int samplerate, int latency) {
-	int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
+  int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
   return ((unsigned long long int)latency * samplerate) / (256 * multiplier);
 }
 
@@ -160,25 +160,25 @@ void create_stream(pa_sample_spec *ss, int latency) {
 
   pa_threaded_mainloop_unlock(G.mainloop);
 
-	G.ss = *ss;
+  G.ss = *ss;
 }
 
 bool frame_to_sample_spec(pa_sample_spec *ss, int rate, int channels, int bitdepth) {
   *ss = (pa_sample_spec){
-		.rate = rate,
-		.channels = channels
-	};
+    .rate = rate,
+    .channels = channels
+  };
 
-	switch (bitdepth) {
-		case 24:
-			ss->format = PA_SAMPLE_S24BE;
-			break;
-		case 16:
-			ss->format = PA_SAMPLE_S16BE;
-			break;
-		default:
+  switch (bitdepth) {
+    case 24:
+      ss->format = PA_SAMPLE_S24BE;
+      break;
+    case 16:
+      ss->format = PA_SAMPLE_S16BE;
+      break;
+    default:
       return false;
-	}
+  }
 
   return true;
 }
@@ -353,15 +353,15 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
 //    printf("frame halt %i frame %i audio_length %zi\n", frame->halt, frame->seqnum, frame->audio_length);
   static bool first = false;
 
-	if (!pa_sample_spec_equal(&G.ss, &frame->ss))
+  if (!pa_sample_spec_equal(&G.ss, &frame->ss))
     drain();
 
-	if (G.stream == NULL) {
+  if (G.stream == NULL) {
     create_stream(&frame->ss, frame->latency);
     first = true;
   }
 
-	play_data(frame->audio, frame->audio_length);
+  play_data(frame->audio, frame->audio_length);
 
   if (ts != NULL && first) {
     first = false;
@@ -373,7 +373,7 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
     pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
   }
 
-	if (frame->halt)
+  if (frame->halt)
     drain();
 
   G.last_played = frame->seqnum;
