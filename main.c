@@ -21,6 +21,9 @@
 
 void open_uri(char *uri_string);
 
+int ohm_fd;
+struct uri *ohm_uri;
+
 char *resolve_preset(int preset) {
 	int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
@@ -320,6 +323,38 @@ void ohm_send_event(int fd, struct uri *uri, int event) {
 		error(1, errno, "Could not send message");
 }
 
+void ohm_send_resend_request(unsigned int seqnums[], int count) {
+	if (count == 0)
+		return;
+
+	struct sockaddr_in dst = {
+		.sin_family = AF_INET,
+		.sin_port = htons(ohm_uri->port),
+		.sin_addr.s_addr = inet_addr(ohm_uri->host)
+	};
+
+	size_t size = sizeof(ohm1_resend_request) + sizeof(uint32_t) * count;
+	ohm1_resend_request *msg = calloc(1, size);
+	msg->hdr = (ohm1_header) {
+		.signature = "Ohm ",
+		.version = 1,
+		.type = OHM1_RESEND_REQUEST,
+		.length = htons(size)
+	};
+
+	msg->count = htonl(count);
+
+	for (int i = 0; i < count; i++) {
+		printf("Requesting %i\n", seqnums[i]);
+		msg->seqnums[i] = htonl(seqnums[i]);
+	}
+
+	if (sendto(ohm_fd, msg, size, 0, (const struct sockaddr*) &dst, sizeof(dst)) < 0)
+		error(1, errno, "Could not send message");
+
+	free(msg);
+}
+
 void dump_track(ohm1_track *track) {
 	printf("Track URI: %.*s\n", htonl(track->uri_length), track->data);
 	printf("Track Metadata: %.*s\n", htonl(track->metadata_length), track->data + htonl(track->uri_length));
@@ -387,11 +422,16 @@ void play_uri(struct uri *uri) {
 	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
 		error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
 
+	ohm_fd = fd;
+	ohm_uri = uri;
+
 	ohm_send_event(fd, uri, OHM1_JOIN);
 	ohm_send_event(fd, uri, OHM1_LISTEN);
 
 	struct timespec last_listen;
 	clock_gettime(CLOCK_MONOTONIC, &last_listen);
+
+	player_init();
 
 	while (1) {
 		struct timespec now;
@@ -441,12 +481,6 @@ void play_uri(struct uri *uri) {
 				default:
 					break;
 			}
-
-		struct {
-			ohm1_header hdr;
-			uint32_t count;
-			uint32_t frames[];
-		} *lost = buf;
 
 		switch (hdr->type) {
 			case OHM1_LEAVE:

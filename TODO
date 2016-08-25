@@ -7,6 +7,7 @@
 - [X] finish preset parsing
 - [X] OHU forwarding
 - [ ] build code for managing missed frames. sorted list of integers?
+- [ ] ohm send event could share code with ohm_send_resend_request
 - [ ] port to async API
 - [ ] init/destroy for player.c (also to handle null uri)
 - [ ] PA_STREAM_ADJUST_LATENCY
@@ -41,3 +42,27 @@ After an underrun, reset the prebuf to 100% and start filling the buffer
 once it can be fully filled again from the heap. Render 20ms fade-in in this case.
 
 Or maybe this gets to complicated using pulseaudio?
+
+
+# Handling of missing packets
+
+In general, we're only concerned with the last X (e.g. 50) frames.
+We'll keep a fixed size array with pointers to struct audio_frame entries.
+Played frames will be reset to NULL.
+We'll also keep track of the seqnum of the last frame, so that
+each entry can be indexed by its seqnum.
+Arriving frames will be added at the appropiate location.
+If they are too old, they'll be ignored.
+If they are older than the last played frame, they'll be ignored, too.
+If the frame has a higher seqnum than the end of the array, the array
+will be shifted. Before shifting, every seqnum that would be removed, will
+be freed.
+
+Any NULLs between last_played and last_received must be requested.
+
+missingframes.c/h entfernen
+
+struct {
+  bool missing;
+  struct audio_frame *frame;
+};

@@ -71,3 +71,9 @@ typedef struct __attribute__((__packed__)) {
   uint32_t count;
   ohm1_slave_entry slaves[];
 } ohm1_slave;
+
+typedef struct __attribute__((__packed__)) {
+  ohm1_header hdr;
+  uint32_t count;
+  uint32_t seqnums[];
+} ohm1_resend_request;

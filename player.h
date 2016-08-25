@@ -12,6 +12,7 @@ struct audio_frame {
   void *audio;
   size_t audio_length;
   bool halt;
+  bool resent;
 };
 
 struct cache {
@@ -20,5 +21,6 @@ struct cache {
   struct cache *prev;
 };
 
+void player_init(void);
 void player_stop(void);
 void handle_frame(ohm1_audio *frame);

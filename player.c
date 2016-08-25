@@ -5,23 +5,34 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #include "player.h"
+#include "main.h"
+
+#define CACHE_SIZE 200
 
 struct {
   pa_simple *pa_stream;
   pa_sample_spec ss;
-  unsigned int last_frame;
+  unsigned int last_played;
+  unsigned int last_received;
+  struct audio_frame *cache[CACHE_SIZE];
 } G = {};
 
 // prototypes
 void play_frame(struct audio_frame *frame);
-bool process_frame(struct audio_frame *frame);
+void process_frame(struct audio_frame *frame);
 
 // functions
 int latency_helper(int samplerate, int latency) {
 	int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
   return ((unsigned long long int)latency * samplerate) / (256 * multiplier);
+}
+
+void player_init(void) {
+  G.last_played = 0;
+  G.last_received = 0;
 }
 
 void player_stop(void) {
@@ -85,6 +96,7 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
   aframe->latency = ntohl(frame->media_latency);
   aframe->audio_length = frame->channels * frame->bitdepth * ntohs(frame->samplecount) / 8;
   aframe->halt = frame->flags & OHM1_FLAG_HALT;
+  aframe->resent = frame->flags & OHM1_FLAG_RESENT;
 
   if (!frame_to_sample_spec(&aframe->ss, ntohl(frame->samplerate), frame->channels, frame->bitdepth)) {
     printf("Unsupported sample spec\n");
@@ -109,75 +121,103 @@ void free_frame(struct audio_frame *frame) {
   free(frame);
 }
 
+void request_frames(void) {
+  unsigned int seqnums[CACHE_SIZE];
+  int count = 0;
+
+  int start = G.last_played + CACHE_SIZE - (long long int)G.last_received;
+  if (start < 0)
+    start = 0;
+
+  for (int i = start; i < CACHE_SIZE; i++)
+    if (G.cache[i] == NULL)
+      seqnums[count++] = (long long int)G.last_received - CACHE_SIZE + i + 1;
+
+  ohm_send_resend_request(seqnums, count);
+}
+
 void handle_frame(ohm1_audio *frame) {
   struct audio_frame *aframe = parse_frame(frame);
 
   if (aframe == NULL)
     return;
 
-  // TODO remove seqnum from list of missed frames
+  process_frame(aframe);
 
-  bool ret = process_frame(aframe);
+  // Don't send resend requests when the frame was an answer.
+  if (!aframe->resent)
+    request_frames();
 
-  if (ret) {
-    free_frame(aframe);
-    // discard any missing frames before aframe->seqnum
-    // Try pulling frames from the cache in a loop.
-    // How many?
-    // Does it suffice for process_frame() to block in case of overruns?
-  } else {
-    printf("Gap! %i\n", aframe->seqnum - G.last_frame - 1);
-    for (unsigned int i = G.last_frame + 1; i < aframe->seqnum; i++) {
-      printf("Missing %i\n", i);
-      // add to missing list if not present
-      // send resend requests
-      // there should be an upper limit here. maybe about 40 missing frames?
-    }
-    // add frame to cache
-    // add all missing seqnums to list of missed frames
-
-    // only add to missed frames here?
-    // cache could be a linked list
-    // need list of missed frames
-    // insertion sort?
-    // skipped frame
-    // TODO put to cache
-    //       update list of missing frames, send resend request(s)
-    //       check if cache holds frame_latency amount of data
-    //       if so, pull from cache
-    //       generally, we only pull from cache sequentially
-    //       if we can't do that, a buffer underrun occurs and the stream corks
-
-    // Buffer Underruns
-    // - a buffer underrun will cork the stream
-    // Precondition: Stream is corked.
-    // - start again when we have enough data to fill the buffer
-    // - this will be triggered by an incoming frame
-    // - fill the buffer
-    // - discard any old cached frames
-    // - calculate and set readpointer, then uncork stream
-    // - this may skip some samples
-    // - what is the exact time the playback should resume?
-    // - if we have not timestamps, we can only infer that the frame just received should play after the latency has passed
-    // - does this even differ from a real start? could this behaviour be merged?
-  }
-
-  // TODO try pull from cache
-  // What to do on buffer overruns? Fade out as much as possible?
+  // TODO could handle_frame return a list of missing frames instead of using callbacks?
 }
 
-// Tries to process a single frame.
-// \return        true  - frame was consumed and can be freed
-//                false - there is a gap. this frame might fit at a later point
-bool process_frame(struct audio_frame *frame) {
-  if (frame->seqnum == G.last_frame + 1 || G.last_frame == 0) {
+void process_frame(struct audio_frame *frame) {
+  printf("Handling frame %i\n", frame->seqnum);
+
+  if (frame->seqnum <= G.last_played)
+    return;
+
+  if (frame->seqnum == G.last_played + 1 || G.last_played == 0) {
     // This is the next frame. Play it.
+    printf("Playing %i                       ==== PLAY ===\n", frame->seqnum);
     play_frame(frame);
-    G.last_frame = frame->seqnum;
-    return true;
+
+    int start = G.last_played + CACHE_SIZE - (long long int)G.last_received;
+    if (start < 0)
+      start = 0;
+
+    for (int i = start; i < CACHE_SIZE; i++) {
+      struct audio_frame *cframe = G.cache[i];
+
+      if (cframe == NULL)
+        break;
+
+      printf("Cache frame %i, expecting %i\n", cframe->seqnum, G.last_played + 1);
+
+      if (cframe->seqnum != G.last_played + 1)
+        break;
+
+      printf("Playing from cache %i\n", cframe->seqnum);
+
+      play_frame(cframe);
+      G.cache[i] = NULL;
+    }
+
+    return;
   }
 
-  return frame->seqnum < G.last_frame;
+  // Frame is too old to be cached.
+  if (frame->seqnum < (long long int)G.last_received - CACHE_SIZE)
+    return;
+
+  if (frame->seqnum > G.last_received) {
+    printf("Frame from the future %i.\n", frame->seqnum);
+    // This is a frame from the future.
+    // Shift cache.
+
+    // aframe->seqnum - last_received frames at the start must be discarded
+    int delta = frame->seqnum - G.last_received;
+
+    for (int i = 0; i < CACHE_SIZE; i++) {
+      if (i < delta && G.cache[i] != NULL)
+        free_frame(G.cache[i]);
+
+      if (i < CACHE_SIZE - delta)
+        G.cache[i] = G.cache[i + delta];
+      else
+        G.cache[i] = NULL;
+    }
+
+    G.last_received = frame->seqnum;
+  }
+
+  int i = frame->seqnum + CACHE_SIZE - G.last_received - 1;
+
+  printf("Caching frame %i\n", frame->seqnum);
+  if (G.cache[i] == NULL)
+    G.cache[i] = frame;
+  else
+    free_frame(frame);
 }
 
 void play_frame(struct audio_frame *frame) {
@@ -193,4 +233,7 @@ void play_frame(struct audio_frame *frame) {
 
 	if (frame->halt)
     drain();
+
+  G.last_played = frame->seqnum;
+  free_frame(frame);
 }
