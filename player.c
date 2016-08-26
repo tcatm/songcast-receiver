@@ -136,8 +136,8 @@ void create_stream(pa_sample_spec *ss, int latency) {
   pa_buffer_attr bufattr = {
     .maxlength = -1,
     .minreq = -1,
-    .prebuf = -1,
-    .tlength = 2 * latency_helper(ss->rate, latency) * pa_frame_size(ss),
+    .prebuf = 2 * latency_helper(ss->rate, latency) * pa_frame_size(ss),
+    .tlength = 3 * latency_helper(ss->rate, latency) * pa_frame_size(ss),
   };
 
   G.stream = pa_stream_new(G.context, "Songcast Receiver", ss, &map);
