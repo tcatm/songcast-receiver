@@ -27,9 +27,9 @@ void play_frame(struct audio_frame *frame, struct timespec *ts);
 void process_frame(struct audio_frame *frame, struct timespec *ts);
 
 // functions
-int latency_helper(int samplerate, int latency) {
+pa_usec_t latency_to_usec(int samplerate, int latency) {
   int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
-  return ((unsigned long long int)latency * samplerate) / (256 * multiplier);
+  return latency * 1e6 / (256 * multiplier);
 }
 
 void context_state_cb(pa_context* context, void* mainloop) {
@@ -125,20 +125,13 @@ void drain(void) {
   */
 }
 
-void create_stream(pa_sample_spec *ss, int latency) {
+void create_stream(pa_sample_spec *ss) {
   printf("Start stream.\n");
 
   pa_threaded_mainloop_lock(G.mainloop);
 
   pa_channel_map map;
   assert(pa_channel_map_init_auto(&map, ss->channels, PA_CHANNEL_MAP_DEFAULT));
-
-  pa_buffer_attr bufattr = {
-    .maxlength = -1,
-    .minreq = -1,
-    .prebuf = 2 * latency_helper(ss->rate, latency) * pa_frame_size(ss),
-    .tlength = 3 * latency_helper(ss->rate, latency) * pa_frame_size(ss),
-  };
 
   G.stream = pa_stream_new(G.context, "Songcast Receiver", ss, &map);
   pa_stream_set_state_callback(G.stream, stream_state_cb, G.mainloop);
@@ -149,7 +142,7 @@ void create_stream(pa_sample_spec *ss, int latency) {
                  PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
 
   // Connect stream to the default audio output sink
-  assert(pa_stream_connect_playback(G.stream, NULL, &bufattr, stream_flags, NULL, NULL) == 0);
+  assert(pa_stream_connect_playback(G.stream, NULL, NULL, stream_flags, NULL, NULL) == 0);
 
   // Wait for the stream to be ready
   while (true) {
@@ -358,7 +351,7 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
     drain();
 
   if (G.stream == NULL) {
-    create_stream(&frame->ss, frame->latency);
+    create_stream(&frame->ss);
     first = true;
   }
 
@@ -372,9 +365,25 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
     printf("delay %gms\n", diff * 1e3);
 
     // TODO figure out how much time we have until we need to uncork
+    //      i.e. figure out sink latency
     // TODO figure out network latency
     // TODO calculate exact pre-buffer latency
 
+    pa_usec_t latency_usec = latency_to_usec(frame->ss.rate, frame->latency);
+    //latency_usec -= 1500; // estimation for wifi latency
+    latency_usec -= diff * 1e6;
+    printf("latency %uusec\n", latency_usec);
+    size_t buffer_size = pa_usec_to_bytes(latency_usec, &frame->ss);
+    printf("buffer size %u\n", buffer_size);
+
+    pa_buffer_attr bufattr = {
+      .maxlength = 2 * buffer_size,
+      .minreq = -1,
+      .prebuf = buffer_size,
+      .tlength = -1,
+    };
+
+    pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
     pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
   }
 
