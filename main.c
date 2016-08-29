@@ -13,6 +13,7 @@
 #include <libxml/xpath.h>
 #include <uriparser/Uri.h>
 #include <time.h>
+#include <assert.h>
 
 #include "timespec.h"
 #include "ohz_v1.h"
@@ -113,7 +114,6 @@ char *resolve_preset(int preset) {
 
     if (metadata != NULL)
       break;
-
   }
 
   xmlXPathContextPtr context;
@@ -166,7 +166,7 @@ struct uri *parse_uri(char *uri_string) {
   else
     s->path = strdup("");
 
-        uriFreeUriMembersA(&uri);
+  uriFreeUriMembersA(&uri);
 
   return s;
 }
@@ -245,7 +245,7 @@ void resolve_ohz(struct uri *uri) {
 
   while (1) {
     if (sendmsg(fd, &message, 0) == -1)
-      error(1, errno, "sendmsg failed");
+    error(1, errno, "sendmsg failed");
 
     uint8_t buf[4096];
 
@@ -416,6 +416,9 @@ void play_uri(struct uri *uri) {
   if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
     error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
 
+  if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &(int){ 1 }, sizeof(int)) < 0)
+    error(1, errno, "setsockopt(SO_TIMESTAMP) failed");
+
   ohm_send_event(fd, uri, OHM1_JOIN);
   ohm_send_event(fd, uri, OHM1_LISTEN);
 
@@ -438,101 +441,135 @@ void play_uri(struct uri *uri) {
       clock_gettime(CLOCK_MONOTONIC, &last_listen);
     }
 
+    struct sockaddr_storage src_addr;
+
+    char ctrl[CMSG_SPACE(sizeof(struct timeval))];
+    struct cmsghdr *cmsg = (struct cmsghdr *)&ctrl;
+
+    struct iovec iov[1] = {
+      {
+        .iov_base = &buf,
+        .iov_len = sizeof(buf)
+      }
+    };
+
+    struct msghdr msg = {
+      .msg_name = &src_addr,
+      .msg_namelen = sizeof(src_addr),
+      .msg_iov = iov,
+      .msg_iovlen = 1,
+      .msg_control = ctrl,
+      .msg_controllen = sizeof(ctrl)
+    };
+
     // TODO determine whether to send listen here
-    ssize_t n = recv(fd, buf, sizeof(buf), 0);
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    ssize_t n = recvmsg(fd, &msg, 0);
 
-    if (n < 0) {
-      if (errno == EAGAIN)
-        continue;
+    struct timespec ts_recv;
 
-      error(1, errno, "recv");
-    }
+    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP &&
+      cmsg->cmsg_len == CMSG_LEN(sizeof(struct timeval))) {
+        struct timeval *tv_recv = CMSG_DATA(cmsg);
+        ts_recv.tv_sec = tv_recv->tv_sec;
+        ts_recv.tv_nsec = (long long int)tv_recv->tv_usec * 1000;
 
-    if (n < sizeof(ohm1_header))
-      continue;
-
-    ohm1_header *hdr = (void *)buf;
-
-    if (strncmp(hdr->signature, "Ohm ", 4) != 0)
-      continue;
-
-    if (hdr->version != 1)
-      continue;
-
-    // Forwarding
-    if (slave_count > 0)
-      switch (hdr->type) {
-        case OHM1_AUDIO:
-        case OHM1_TRACK:
-        case OHM1_METATEXT:
-          for (size_t i = 0; i < slave_count; i++) {
-            // Ignore any errors when sending to slaves.
-            // There is nothing we could do to help.
-            sendto(fd, &buf, n, 0, (const struct sockaddr*) &my_slaves[i], sizeof(struct sockaddr));
-          }
-          break;
-        default:
-          break;
+        // TODO convert to monotonic here?
+      } else {
+        // We always require the timestamp for now.
+        assert(false);
       }
 
-    switch (hdr->type) {
-      case OHM1_LEAVE:
-      case OHM1_JOIN:
-        // ignore join and leave
-        break;
-      case OHM1_LISTEN:
-        if (!unicast)
-          clock_gettime(CLOCK_MONOTONIC, &last_listen);
-        break;
-      case OHM1_AUDIO:
-        missing = handle_frame((void*)buf, &now);
+      if (n < 0) {
+        if (errno == EAGAIN)
+          continue;
 
-        if (missing)
-          ohm_send_resend_request(fd, uri, missing);
+        error(1, errno, "recv");
+      }
 
-        free(missing);
-        break;
-      case OHM1_TRACK:
-        dump_track((void *)buf);
-        break;
-      case OHM1_METATEXT:
-        dump_metatext((void *)buf);
-        break;
-      case OHM1_SLAVE:
-        update_slaves((void *)buf);
-        break;
-      case OHM1_RESEND_REQUEST:
-        break;
-      default:
-        printf("Type %i not handled yet\n", hdr->type);
+      if (n < sizeof(ohm1_header))
+        continue;
+
+      ohm1_header *hdr = (void *)buf;
+
+      if (strncmp(hdr->signature, "Ohm ", 4) != 0)
+        continue;
+
+      if (hdr->version != 1)
+        continue;
+
+      // Forwarding
+      if (slave_count > 0)
+        switch (hdr->type) {
+          case OHM1_AUDIO:
+          case OHM1_TRACK:
+          case OHM1_METATEXT:
+            for (size_t i = 0; i < slave_count; i++) {
+              // Ignore any errors when sending to slaves.
+              // There is nothing we could do to help.
+              sendto(fd, &buf, n, 0, (const struct sockaddr*) &my_slaves[i], sizeof(struct sockaddr));
+            }
+            break;
+          default:
+            break;
+        }
+
+        switch (hdr->type) {
+          case OHM1_LEAVE:
+          case OHM1_JOIN:
+            // ignore join and leave
+            break;
+          case OHM1_LISTEN:
+            if (!unicast)
+              clock_gettime(CLOCK_MONOTONIC, &last_listen);
+            break;
+          case OHM1_AUDIO:
+            missing = handle_frame((void*)buf, &ts_recv);
+
+            if (missing)
+              ohm_send_resend_request(fd, uri, missing);
+
+            free(missing);
+            break;
+          case OHM1_TRACK:
+            dump_track((void *)buf);
+            break;
+          case OHM1_METATEXT:
+            dump_metatext((void *)buf);
+            break;
+          case OHM1_SLAVE:
+            update_slaves((void *)buf);
+            break;
+          case OHM1_RESEND_REQUEST:
+            break;
+          default:
+            printf("Type %i not handled yet\n", hdr->type);
+        }
     }
   }
-}
 
-void open_uri(char *uri_string) {
-  printf("Attemping to open %s\n", uri_string);
+  void open_uri(char *uri_string) {
+    printf("Attemping to open %s\n", uri_string);
 
-  struct uri *uri = parse_uri(uri_string);
+    struct uri *uri = parse_uri(uri_string);
 
-  if (strcmp(uri->scheme, "ohz") == 0)
-    resolve_ohz(uri);
-  else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0)
-    play_uri(uri);
-  else
-    error(1, 0, "unknown URI scheme \"%s\"", uri->scheme);
+    if (strcmp(uri->scheme, "ohz") == 0)
+      resolve_ohz(uri);
+    else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0)
+      play_uri(uri);
+    else
+      error(1, 0, "unknown URI scheme \"%s\"", uri->scheme);
 
-  free_uri(uri);
-}
+    free_uri(uri);
+  }
 
-int main(int argc, char *argv[]) {
-  LIBXML_TEST_VERSION
+  int main(int argc, char *argv[]) {
+    LIBXML_TEST_VERSION
 
-  int preset = 0;
-  char *uri = NULL;
+    int preset = 0;
+    char *uri = NULL;
 
-  int c;
-  while ((c = getopt(argc, argv, "p:u:")) != -1)
+    int c;
+    while ((c = getopt(argc, argv, "p:u:")) != -1)
     switch (c) {
       case 'p':
         preset = atoi(optarg);
@@ -542,16 +579,16 @@ int main(int argc, char *argv[]) {
         break;
     }
 
-  if (uri != NULL && preset != 0)
-    error(1, 0, "Can not specify both preset and URI!");
+    if (uri != NULL && preset != 0)
+      error(1, 0, "Can not specify both preset and URI!");
 
 
-  if (preset != 0)
-    uri = resolve_preset(preset);
+    if (preset != 0)
+      uri = resolve_preset(preset);
 
-  my_slaves = NULL;
+    my_slaves = NULL;
 
-  open_uri(uri);
+    open_uri(uri);
 
-  free(uri);
-}
+    free(uri);
+  }

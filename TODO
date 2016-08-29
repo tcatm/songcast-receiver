@@ -9,16 +9,15 @@
 - [X] handle out of order packets (epoll might help). Use a heap to store frames when previous frames are missing.
 - [X] implement resend request
 - [X] build code for managing missed frames. sorted list of integers?
-- [ ] port to async API
-- [ ] init/destroy for player.c (also to handle null uri)
-- [ ] PA_STREAM_ADJUST_LATENCY
-- [ ] if buffer runs down to 20ms, fade off?
-- [ ] fade in once buffer is 100% filled again
+- [X] port to async API
+- [X] PA_STREAM_ADJUST_LATENCY
+- [ ] handle drains and restarts. save receive timestamp for each frame? which timestamp do we use
 - [ ] clean shutdown on ctrl-c, send leave message
+- [ ] init/destroy for player.c (also to handle null uri)
 - [ ] if ohz: continually listen for matching zone uri messages and switch if changed
 - [ ] actually close sockets! (ohz)
-- [ ] synchronize playback by tweaking the samplerate a little (less then 0.1%)
 - [ ] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
+- [ ] synchronize playback by tweaking the samplerate a little (less then 0.1%)
 - [ ] send join until track and metatext is received. adhere to flow diagram
 - [ ] check whether destination multicast group matches
 - [ ] determine how much of the buffer we control and how much is up to pulseaudio (for resents)
@@ -31,6 +30,8 @@
 - [ ] ohm send event could share code with ohm_send_resend_request
 - [ ] read complete source, read all comments, cleanup
 - [ ] CHECK_DEAD_GOTO aus simple.c übernehmen
+- [ ] if buffer runs down to 20ms, fade off?
+- [ ] fade in once buffer is 100% filled again
 
 # Buffer underrun handling
 
@@ -43,7 +44,8 @@ once it can be fully filled again from the heap. Render 20ms fade-in in this cas
 
 Or maybe this gets to complicated using pulseaudio?
 
+# Restart timestamping
 
-# Start Handling
-
-Start stream corked. Fill buffer. Set readpointer. Uncork.
+Which timestamp do we use? Do we save each receive timestamp? Do we prefill the cache
+if the stream is not yet running? So we can use the same code path for restarts and first
+starts?

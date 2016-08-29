@@ -184,6 +184,7 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
   if (aframe == NULL)
     return NULL;
 
+  aframe->ts_network = ntohl(frame->network_timestamp);
   aframe->seqnum = ntohl(frame->frame);
   aframe->latency = ntohl(frame->media_latency);
   aframe->audio_length = frame->channels * frame->bitdepth * ntohs(frame->samplecount) / 8;
@@ -355,26 +356,22 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
     first = true;
   }
 
+  // debugging...
+  //static old_ts = 0;
+  //printf("ns ts delta %u\n", frame->ts_network - old_ts);
+  //old_ts = frame->ts_network;
+
   play_data(frame->audio, frame->audio_length);
 
   if (ts != NULL && first) {
     first = false;
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double diff = now.tv_sec - ts->tv_sec + (now.tv_nsec - ts->tv_nsec) / 1e9;
-    printf("delay %gms\n", diff * 1e3);
-
-    // TODO figure out how much time we have until we need to uncork
-    //      i.e. figure out sink latency
-    // TODO figure out network latency
-    // TODO calculate exact pre-buffer latency
-
     pa_usec_t latency_usec = latency_to_usec(frame->ss.rate, frame->latency);
-    //latency_usec -= 1500; // estimation for wifi latency
-    latency_usec -= diff * 1e6;
-    printf("latency %uusec\n", latency_usec);
+
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    pa_usec_t diff = (now.tv_sec - ts->tv_sec) * 1000000 + (now.tv_nsec - ts->tv_nsec) / 1000;
+    latency_usec -= diff;
     size_t buffer_size = pa_usec_to_bytes(latency_usec, &frame->ss);
-    printf("buffer size %u\n", buffer_size);
 
     pa_buffer_attr bufattr = {
       .maxlength = 2 * buffer_size,
@@ -385,6 +382,12 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
 
     pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
     pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
+
+    printf("delay %uus\n", diff);
+    printf("latency %uusec\n", latency_usec);
+    printf("buffer size %u\n", buffer_size);
+
+    // TODO figure out network latency
   }
 
   if (frame->halt)

@@ -6,6 +6,7 @@
 
 struct audio_frame {
   unsigned int seqnum;
+  unsigned int ts_network;
   pa_sample_spec ss;
   int latency;
   int samplecount;
