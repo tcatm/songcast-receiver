@@ -1,11 +1,12 @@
 #pragma once
 
 #include <pulse/sample.h>
+#include <time.h>
 
 #include "ohm_v1.h"
 
 struct audio_frame {
-  struct timspec ts_recv;
+  struct timespec ts_recv;
   unsigned int seqnum;
   unsigned int ts_network;
   pa_sample_spec ss;
