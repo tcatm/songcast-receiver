@@ -11,6 +11,8 @@
 - [X] build code for managing missed frames. sorted list of integers?
 - [X] port to async API
 - [X] PA_STREAM_ADJUST_LATENCY
+- [ ] clean up play_data...
+- [ ] introduce stopped/running state. buffer underruns and drains change state to stopped.
 - [ ] handle drains and restarts. save receive timestamp for each frame? which timestamp do we use
 - [ ] clean shutdown on ctrl-c, send leave message
 - [ ] init/destroy for player.c (also to handle null uri)

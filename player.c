@@ -10,9 +10,12 @@
 
 #include "player.h"
 
-#define CACHE_SIZE 50
+#define CACHE_SIZE 100
+
+enum PlayerState {STOPPED, PLAYING};
 
 struct {
+  enum PlayerState state;
   pa_threaded_mainloop *mainloop;
   pa_context *context;
   pa_stream *stream;
@@ -49,6 +52,7 @@ void stream_success_cb(pa_stream *stream, int success, void *userdata) {
 }
 
 void player_init(void) {
+  G.state = STOPPED;
   G.stream = NULL;
   G.last_played = 0;
   G.last_received = 0;
@@ -234,16 +238,110 @@ struct missing_frames *request_frames(void) {
   return d;
 }
 
+bool same_format(struct audio_frame *a, struct audio_frame *b) {
+  return pa_sample_spec_equal(&a->ss, &b->ss) && a->latency == b->latency;
+}
+
+void try_start(void) {
+  printf("stopped\n");
+
+  int start_offset = CACHE_SIZE - 1;
+  struct audio_frame *last = G.cache[start_offset];
+
+  if (last == NULL)
+    return;
+
+  if (last->halt)
+    return;
+
+  size_t length = last->audio_length;
+
+  int start = G.last_played + CACHE_SIZE - (long long int)G.last_received;
+  if (start < 0)
+    start = 0;
+
+  for (int i = CACHE_SIZE - 2; i >= start; i--) {
+    if (G.cache[i] == NULL)
+      break;
+
+    if (!same_format(last, G.cache[i]))
+      break;
+
+    if (G.cache[i]->halt)
+      break;
+
+    start_offset = i;
+    length += G.cache[i]->audio_length;
+  }
+
+  pa_usec_t usec = pa_bytes_to_usec(length, &last->ss);
+  pa_usec_t latency = latency_to_usec(last->ss.rate, last->latency);
+
+  float fill = (float)usec / latency;
+
+  printf("fill %uusec, latency %uusec (%f%%)\n", usec, latency, fill * 100);
+
+  // start if we have at least 20ms of audio
+  if (usec < 20e3)
+    return;
+
+  printf("START\n");
+
+  if (!pa_sample_spec_equal(&G.ss, &last->ss)) {
+    // TODO this needs to drain pretty fast...
+    drain();
+  }
+
+  if (G.stream == NULL)
+    create_stream(&last->ss);
+
+  assert(pa_stream_is_corked(G.stream));
+
+  pa_buffer_attr bufattr = {
+    .maxlength = pa_usec_to_bytes(latency, &last->ss),
+    .minreq = -1,
+    .prebuf = -1,
+    .tlength = pa_usec_to_bytes(latency, &last->ss),
+  };
+
+  pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
+
+  for (int i = start_offset; i < CACHE_SIZE; i++) {
+    play_frame(G.cache[i], NULL);
+    G.cache[i] = NULL;
+  }
+
+  pa_usec_t diff = 0;
+
+  // TODO calculate and set pre-fill level
+
+  bufattr.prebuf = pa_usec_to_bytes(latency - diff, &last->ss);
+  pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
+
+  G.state = PLAYING;
+
+  // TODO calculate exact time when to uncork...
+  pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
+  // uncork
+  // TODO set buffer underrun callback. use this to set G.state = STOPPED
+  // every frame should play at receive_time + latency (-some offset...)
+}
+
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   struct audio_frame *aframe = parse_frame(frame);
 
   if (aframe == NULL)
     return NULL;
 
+  audio_frame->ts_recv = ts;
+
   process_frame(aframe, ts);
 
+  if (G.state == STOPPED)
+    try_start();
+
   // Don't send resend requests when the frame was an answer.
-  if (!aframe->resent)
+  if (!aframe->resent && G.state == PLAYING)
     return request_frames();
 
   return NULL;
@@ -257,7 +355,7 @@ void process_frame(struct audio_frame *frame, struct timespec *ts) {
     return;
   }
 
-  if (frame->seqnum == G.last_played + 1 || G.last_played == 0) {
+  if (frame->seqnum == G.last_played + 1 && G.state == PLAYING) {
     // This is the next frame. Play it.
     //printf("Playing %i                       ==== PLAY ===\n", frame->seqnum);
     play_frame(frame, ts);
@@ -348,14 +446,6 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
 //    printf("frame halt %i frame %i audio_length %zi\n", frame->halt, frame->seqnum, frame->audio_length);
   static bool first = false;
 
-  if (!pa_sample_spec_equal(&G.ss, &frame->ss))
-    drain();
-
-  if (G.stream == NULL) {
-    create_stream(&frame->ss);
-    first = true;
-  }
-
   // debugging...
   //static old_ts = 0;
   //printf("ns ts delta %u\n", frame->ts_network - old_ts);
@@ -370,26 +460,23 @@ void play_frame(struct audio_frame *frame, struct timespec *ts) {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
     pa_usec_t diff = (now.tv_sec - ts->tv_sec) * 1000000 + (now.tv_nsec - ts->tv_nsec) / 1000;
-    latency_usec -= diff;
-    size_t buffer_size = pa_usec_to_bytes(latency_usec, &frame->ss);
 
     pa_buffer_attr bufattr = {
-      .maxlength = 2 * buffer_size,
+      .maxlength = 10 * pa_usec_to_bytes(latency_usec, &frame->ss),
       .minreq = -1,
-      .prebuf = buffer_size,
+      .prebuf = pa_usec_to_bytes(latency_usec - diff, &frame->ss),
       .tlength = -1,
     };
 
     pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
     pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
 
-    printf("delay %uus\n", diff);
-    printf("latency %uusec\n", latency_usec);
-    printf("buffer size %u\n", buffer_size);
+    printf("latency %uusec, diff %uusec\n", latency_usec, diff);
 
     // TODO figure out network latency
   }
 
+  // TODO can we drain it passively by just letting the buffer run empty and transitioning to STOPPED?
   if (frame->halt)
     drain();
 
