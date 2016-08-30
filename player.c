@@ -236,8 +236,6 @@ bool same_format(struct audio_frame *a, struct audio_frame *b) {
 }
 
 void try_start(void) {
-  printf("stopped\n");
-
   int start_offset = CACHE_SIZE - 1;
   struct audio_frame *last = G.cache[start_offset];
 
@@ -272,12 +270,11 @@ void try_start(void) {
 
   float fill = (float)usec / latency;
 
-  printf("fill %uusec, latency %uusec (%f%%)\n", usec, latency, fill * 100);
-
   // start if we have only 20ms left to start the stream
   if (usec < latency - 20e3)
     return;
 
+  printf("fill %uusec, latency %uusec (%f%%)\n", usec, latency, fill * 100);
   printf("START\n");
 
   if (G.stream && !pa_sample_spec_equal(&G.ss, &last->ss)) {
@@ -407,7 +404,7 @@ void process_frame(struct audio_frame *frame) {
 
   int i = frame->seqnum + CACHE_SIZE - G.last_received - 1;
 
-  printf("Caching frame %i\n", frame->seqnum);
+//  printf("Caching frame %i\n", frame->seqnum);
   if (G.cache[i] == NULL)
     G.cache[i] = frame;
   else
