@@ -338,10 +338,8 @@ void ohm_send_resend_request(int fd, const struct uri *uri, const struct missing
 
   msg->count = htonl(missing->count);
 
-  for (int i = 0; i < missing->count; i++) {
-    printf("Requesting %i\n", missing->seqnums[i]);
+  for (int i = 0; i < missing->count; i++)
     msg->seqnums[i] = htonl(missing->seqnums[i]);
-  }
 
   if (sendto(fd, msg, size, 0, (const struct sockaddr*) &dst, sizeof(dst)) < 0)
     error(1, errno, "Could not send message");

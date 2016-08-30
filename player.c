@@ -23,6 +23,7 @@ struct {
   unsigned int last_played;
   unsigned int last_received;
   struct audio_frame *cache[CACHE_SIZE];
+  bool first_run;
 } G = {};
 
 // prototypes
@@ -51,16 +52,22 @@ void stream_success_cb(pa_stream *stream, int success, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void stream_underflow_cb(pa_stream *stream, void *userdata) {
-  printf("Underflow\n");
-
+void stop_playback(void) {
   // TODO wait for succcess?
-  pa_stream_cork(G.stream, 1, stream_success_cb, G.mainloop);
+  if (G.stream)
+    pa_stream_cork(G.stream, 1, stream_success_cb, G.mainloop);
 
   G.state = STOPPED;
 }
 
+void stream_underflow_cb(pa_stream *stream, void *userdata) {
+  printf("Underflow\n");
+
+  stop_playback();
+}
+
 void player_init(void) {
+  G.first_run = true;
   G.state = STOPPED;
   G.stream = NULL;
   G.last_played = 0;
@@ -223,7 +230,8 @@ struct missing_frames *request_frames(void) {
     if (G.cache[i] == NULL)
       d->seqnums[d->count++] = (long long int)G.last_received - CACHE_SIZE + i + 1;
 
-  if (d->count == 0) {
+  // Do not request data if we're missing more than 80% of the CACHE_SIZE
+  if (d->count == 0 || d->count > 0.8 * CACHE_SIZE) {
     free(d);
     return NULL;
   }
@@ -246,6 +254,8 @@ void try_start(void) {
     return;
 
   size_t length = last->audio_length;
+  pa_usec_t latency = latency_to_usec(last->ss.rate, last->latency);
+  pa_usec_t usec = pa_bytes_to_usec(last->audio_length, &last->ss);
 
   int start = G.last_played + CACHE_SIZE - (long long int)G.last_received;
   if (start < 0)
@@ -262,17 +272,18 @@ void try_start(void) {
       break;
 
     start_offset = i;
-    length += G.cache[i]->audio_length;
+    usec += pa_bytes_to_usec(G.cache[i]->audio_length, &last->ss);
+
+    if (usec > latency - 20e3)
+      break;
   }
 
-  pa_usec_t usec = pa_bytes_to_usec(length, &last->ss);
-  pa_usec_t latency = latency_to_usec(last->ss.rate, last->latency);
+  if (usec < latency - 20e3)
+    return;
 
   float fill = (float)usec / latency;
 
   // start if we have only 20ms left to start the stream
-  if (usec < latency - 20e3)
-    return;
 
   printf("fill %uusec, latency %uusec (%f%%)\n", usec, latency, fill * 100);
   printf("START\n");
@@ -300,14 +311,21 @@ void try_start(void) {
     .tlength = 2 * pa_usec_to_bytes(latency, &last->ss),
   };
 
+  // TODO wait for success
+  // actually wait on all pa calls for success?
+  // abstract pulse into seperate file?
   pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
 
-
+  // TODO figure out where to write this in the buffer and start playback immediately?
+  // The problem is like this:
+  //   The stream is uncorked and waiting for the frame arriving after latency to trigger
+  //   play back. This frame is then lost and playback never starts, yet the software thinks it has started.
   for (int i = start_offset; i < CACHE_SIZE; i++) {
     play_frame(G.cache[i]);
     G.cache[i] = NULL;
   }
 
+  G.first_run = false;
   G.state = PLAYING;
   pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
 
@@ -328,11 +346,20 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
 
   process_frame(aframe);
 
+  printf("%i %u %u\n", G.state, G.last_played, G.last_received);
+
+  int start = (long long int)G.last_received - CACHE_SIZE;
+
+  if (G.state == PLAYING && G.last_played + 1 < start) {
+    printf("Cache underrun. Stopping playback.");
+    stop_playback();
+  }
+
   if (G.state == STOPPED)
     try_start();
 
   // Don't send resend requests when the frame was an answer.
-  if (!aframe->resent && G.state == PLAYING)
+  if (!aframe->resent && !G.first_run)
     return request_frames();
 
   return NULL;
@@ -366,7 +393,7 @@ void process_frame(struct audio_frame *frame) {
       if (cframe->seqnum != G.last_played + 1)
         break;
 
-      printf("Playing from cache %i\n", cframe->seqnum);
+    //  printf("Playing from cache %i\n", cframe->seqnum);
 
       play_frame(cframe);
       G.cache[i] = NULL;
@@ -382,7 +409,7 @@ void process_frame(struct audio_frame *frame) {
   }
 
   if (frame->seqnum > G.last_received) {
-    printf("Frame from the future %i.\n", frame->seqnum);
+    //  printf("Frame from the future %i.\n", frame->seqnum);
     // This is a frame from the future.
     // Shift cache.
 
