@@ -44,11 +44,11 @@ void stream_state_cb(pa_stream *s, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void stream_write_cb(pa_stream *stream, size_t size, void *mainloop) {
+static void stream_request_cb(pa_stream *s, size_t length, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void stream_success_cb(pa_stream *stream, int success, void *mainloop) {
+static void success_cb(pa_stream *s, int success, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
@@ -109,24 +109,25 @@ void player_stop(void) {
 }
 
 void drain(void) {
-  // TODO in which cases do we need to drain the stream at all?
   printf("Draining.\n");
 
   if (G.stream == NULL)
     return;
-/*
+
   pa_threaded_mainloop_lock(G.mainloop);
 
-  pa_operation o = pa_stream_drain(G.stream, stream_success_cb, G.mainloop);
-
+  pa_operation *o = pa_stream_drain(G.stream, success_cb, G.mainloop);
   while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
       pa_threaded_mainloop_wait(G.mainloop);
 
   pa_operation_unref(o);
+
+  pa_stream_unref(G.stream);
+  G.stream = NULL;
+
   pa_threaded_mainloop_unlock(G.mainloop);
 
-  G.pa_stream = NULL;
-  */
+  G.state = STOPPED;
 }
 
 void create_stream(pa_sample_spec *ss) {
@@ -139,7 +140,7 @@ void create_stream(pa_sample_spec *ss) {
 
   G.stream = pa_stream_new(G.context, "Songcast Receiver", ss, &map);
   pa_stream_set_state_callback(G.stream, stream_state_cb, G.mainloop);
-  pa_stream_set_write_callback(G.stream, stream_write_cb, G.mainloop);
+  pa_stream_set_write_callback(G.stream, stream_request_cb, G.mainloop);
 
   pa_stream_flags_t stream_flags;
   stream_flags = PA_STREAM_START_CORKED | PA_STREAM_NOT_MONOTONIC |
@@ -318,7 +319,13 @@ void try_start(void) {
   // TODO wait for success
   // actually wait on all pa calls for success?
   // abstract pulse into seperate file?
-  o = pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
+  o = pa_stream_set_buffer_attr(G.stream, &bufattr, success_cb, G.mainloop);
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+      pa_threaded_mainloop_wait(G.mainloop);
+
+  pa_operation_unref(o);
+
+  o = pa_stream_prebuf(G.stream, success_cb, G.mainloop);
   while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
       pa_threaded_mainloop_wait(G.mainloop);
 
@@ -335,7 +342,11 @@ void try_start(void) {
 
   G.first_run = false;
   G.state = PLAYING;
-  pa_stream_cork(G.stream, 0, stream_success_cb, G.mainloop);
+  o = pa_stream_cork(G.stream, 0, success_cb, G.mainloop);
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+      pa_threaded_mainloop_wait(G.mainloop);
+
+  pa_operation_unref(o);
 
   // alternatively, set prebuf to average processing time of frame?
   // moving average processing time?
@@ -452,7 +463,9 @@ void play_data(const void *data, size_t length) {
       pa_threaded_mainloop_wait(G.mainloop);
   }
 
-  pa_stream_write(G.stream, data, length, NULL, 0LL, PA_SEEK_RELATIVE);
+  int r = pa_stream_write(G.stream, data, length, NULL, 0LL, PA_SEEK_RELATIVE);
+
+  assert(r >= 0);
 
   pa_threaded_mainloop_unlock(G.mainloop);
 }
@@ -461,8 +474,8 @@ void play_frame(struct audio_frame *frame) {
   play_data(frame->audio, frame->audio_length);
 
   // wait for buffer underrun?
-  //if (frame->halt)
-  //  drain();
+  if (frame->halt)
+    drain();
 
   G.last_played = frame->seqnum;
   free_frame(frame);
