@@ -53,18 +53,31 @@ static void success_cb(pa_stream *s, int success, void *mainloop) {
 }
 
 void stop_playback(void) {
+  pa_threaded_mainloop_lock(G.mainloop);
+
   if (G.stream) {
-    pa_stream_cork(G.stream, 1, NULL, NULL);
-    pa_stream_flush(G.stream, NULL, NULL);
+    pa_operation *o;
+    o = pa_stream_cork(G.stream, 1, success_cb, G.mainloop);
+    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+        pa_threaded_mainloop_wait(G.mainloop);
+
+    pa_operation_unref(o);
+
+    o = pa_stream_flush(G.stream, success_cb, G.mainloop);
+    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+        pa_threaded_mainloop_wait(G.mainloop);
+
+    pa_operation_unref(o);
   }
 
   G.state = STOPPED;
+  pa_threaded_mainloop_unlock(G.mainloop);
 }
 
 void stream_underflow_cb(pa_stream *stream, void *userdata) {
   printf("Underflow\n");
 
-  //stop_playback();
+  G.state = STOPPED;
 }
 
 void player_init(void) {
@@ -132,9 +145,9 @@ void drain(void) {
 }
 
 void create_stream(pa_sample_spec *ss) {
-  printf("Start stream.\n");
-
   pa_threaded_mainloop_lock(G.mainloop);
+
+  printf("Start stream.\n");
 
   pa_channel_map map;
   assert(pa_channel_map_init_auto(&map, ss->channels, PA_CHANNEL_MAP_DEFAULT));
@@ -146,6 +159,7 @@ void create_stream(pa_sample_spec *ss) {
   pa_stream_flags_t stream_flags;
   stream_flags = PA_STREAM_START_CORKED | PA_STREAM_NOT_MONOTONIC |
                  PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
+                 // | PA_STREAM_VARIABLE_RATE;
 
   // Connect stream to the default audio output sink
   assert(pa_stream_connect_playback(G.stream, NULL, NULL, stream_flags, NULL, NULL) == 0);
@@ -292,6 +306,8 @@ void try_start(void) {
   printf("fill %uusec, latency %uusec (%f%%)\n", usec, latency, fill * 100);
   printf("START\n");
 
+  // TODO make everything below a separate function
+
   if (G.stream && !pa_sample_spec_equal(&G.ss, &last->ss)) {
     // TODO this needs to drain pretty fast...
     //      maybe drain as soon as sample_spec change is detected?
@@ -306,16 +322,28 @@ void try_start(void) {
 
   pa_operation *o;
 
-  assert(pa_stream_is_corked(G.stream));
+  pa_threaded_mainloop_lock(G.mainloop);
+
+  o = pa_stream_cork(G.stream, 1, success_cb, G.mainloop);
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+      pa_threaded_mainloop_wait(G.mainloop);
+
+  pa_operation_unref(o);
+
+  o = pa_stream_flush(G.stream, success_cb, G.mainloop);
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+      pa_threaded_mainloop_wait(G.mainloop);
+
+  pa_operation_unref(o);
 
   // This should reflect any network and processing delays.
   pa_usec_t delay = 0;
 
   pa_buffer_attr bufattr = {
-    .maxlength = 2 * pa_usec_to_bytes(latency, &last->ss),
+    .maxlength = -1,
     .minreq = -1,
     .prebuf = pa_usec_to_bytes(latency - delay, &last->ss),
-    .tlength = 2 * pa_usec_to_bytes(latency, &last->ss),
+    .tlength = pa_usec_to_bytes(latency, &last->ss),
   };
 
   // TODO wait for success
@@ -337,10 +365,14 @@ void try_start(void) {
   // The problem is like this:
   //   The stream is uncorked and waiting for the frame arriving after latency to trigger
   //   play back. This frame is then lost and playback never starts, yet the software thinks it has started.
+  pa_threaded_mainloop_unlock(G.mainloop);
+
   for (int i = start_offset; i < CACHE_SIZE; i++) {
     play_frame(G.cache[i]);
     G.cache[i] = NULL;
   }
+
+  pa_threaded_mainloop_lock(G.mainloop);
 
   G.first_run = false;
   G.state = PLAYING;
@@ -355,6 +387,7 @@ void try_start(void) {
 
   // TODO set buffer underrun callback. use this to set G.state = STOPPED
   // every frame should play at receive_time + latency (-some offset...)
+  pa_threaded_mainloop_unlock(G.mainloop);
 }
 
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
@@ -366,6 +399,21 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   aframe->ts_recv = *ts;
 
   process_frame(aframe);
+  /*
+   * Sample code for chaing rate on the fly...
+  if (G.stream) {
+  pa_threaded_mainloop_lock(G.mainloop);
+  static int rate = 44100;
+    pa_operation *o = pa_stream_update_sample_rate(G.stream, rate--, success_cb, G.mainloop);
+    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+        pa_threaded_mainloop_wait(G.mainloop);
+
+    pa_operation_unref(o);
+  pa_threaded_mainloop_unlock(G.mainloop);
+  }
+  */
+
+
 
   int start = (long long int)G.last_received - CACHE_SIZE;
 
