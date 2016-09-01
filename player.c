@@ -293,6 +293,7 @@ void try_start(void) {
 
   if (G.stream && !pa_sample_spec_equal(&G.ss, &last->ss)) {
     // TODO this needs to drain pretty fast...
+    //      maybe drain as soon as sample_spec change is detected?
     // will this ever happen?
     // TODO close stream
     assert(pa_stream_is_corked(G.stream));
@@ -473,7 +474,6 @@ void play_data(const void *data, size_t length) {
 void play_frame(struct audio_frame *frame) {
   play_data(frame->audio, frame->audio_length);
 
-  // wait for buffer underrun?
   if (frame->halt)
     drain();
 
