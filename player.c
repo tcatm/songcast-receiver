@@ -54,8 +54,10 @@ void stream_success_cb(pa_stream *stream, int success, void *mainloop) {
 
 void stop_playback(void) {
   // TODO wait for succcess?
-  if (G.stream)
-    pa_stream_cork(G.stream, 1, stream_success_cb, G.mainloop);
+  if (G.stream) {
+    pa_stream_cork(G.stream, 1, NULL, NULL);
+    pa_stream_flush(G.stream, NULL, NULL);
+  }
 
   G.state = STOPPED;
 }
@@ -299,6 +301,8 @@ void try_start(void) {
   if (G.stream == NULL)
     create_stream(&last->ss);
 
+  pa_operation *o;
+
   assert(pa_stream_is_corked(G.stream));
 
   // This should reflect any network and processing delays.
@@ -314,7 +318,11 @@ void try_start(void) {
   // TODO wait for success
   // actually wait on all pa calls for success?
   // abstract pulse into seperate file?
-  pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
+  o = pa_stream_set_buffer_attr(G.stream, &bufattr, NULL, NULL);
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+      pa_threaded_mainloop_wait(G.mainloop);
+
+  pa_operation_unref(o);
 
   // TODO figure out where to write this in the buffer and start playback immediately?
   // The problem is like this:
@@ -345,8 +353,6 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   aframe->ts_recv = *ts;
 
   process_frame(aframe);
-
-  printf("%i %u %u\n", G.state, G.last_played, G.last_received);
 
   int start = (long long int)G.last_received - CACHE_SIZE;
 
@@ -441,21 +447,12 @@ void process_frame(struct audio_frame *frame) {
 void play_data(const void *data, size_t length) {
   pa_threaded_mainloop_lock(G.mainloop);
 
-  while (length > 0) {
-      size_t l;
-      int r;
-
-      while (!(l = pa_stream_writable_size(G.stream)))
-          pa_threaded_mainloop_wait(G.mainloop);
-
-      if (l > length)
-          l = length;
-
-      r = pa_stream_write(G.stream, data, l, NULL, 0LL, PA_SEEK_RELATIVE);
-
-      data = (const uint8_t*) data + l;
-      length -= l;
+  while (pa_stream_writable_size(G.stream) < length) {
+      printf("wait for write\n");
+      pa_threaded_mainloop_wait(G.mainloop);
   }
+
+  pa_stream_write(G.stream, data, length, NULL, 0LL, PA_SEEK_RELATIVE);
 
   pa_threaded_mainloop_unlock(G.mainloop);
 }
