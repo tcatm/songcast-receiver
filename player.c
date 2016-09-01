@@ -53,7 +53,6 @@ static void success_cb(pa_stream *s, int success, void *mainloop) {
 }
 
 void stop_playback(void) {
-  // TODO wait for succcess?
   if (G.stream) {
     pa_stream_cork(G.stream, 1, NULL, NULL);
     pa_stream_flush(G.stream, NULL, NULL);
@@ -65,7 +64,7 @@ void stop_playback(void) {
 void stream_underflow_cb(pa_stream *stream, void *userdata) {
   printf("Underflow\n");
 
-  stop_playback();
+  //stop_playback();
 }
 
 void player_init(void) {
@@ -121,6 +120,8 @@ void drain(void) {
       pa_threaded_mainloop_wait(G.mainloop);
 
   pa_operation_unref(o);
+
+  assert(pa_stream_disconnect(G.stream) == 0);
 
   pa_stream_unref(G.stream);
   G.stream = NULL;
@@ -368,6 +369,7 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
 
   int start = (long long int)G.last_received - CACHE_SIZE;
 
+  // This is different from a pulseaudio underrun!
   if (G.state == PLAYING && G.last_played + 1 < start) {
     printf("Cache underrun. Stopping playback.");
     stop_playback();
