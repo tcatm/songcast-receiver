@@ -2,26 +2,23 @@
 
 #include <pulse/sample.h>
 #include <time.h>
+#include <stdint.h>
 
 #include "ohm_v1.h"
 
 struct audio_frame {
-  struct timespec ts_recv;
+  uint64_t ts_recv_usec;
+  uint64_t ts_due_usec;
   unsigned int seqnum;
   unsigned int ts_network;
   pa_sample_spec ss;
   int latency;
   int samplecount;
   void *audio;
+  void *readptr;
   size_t audio_length;
   bool halt;
   bool resent;
-};
-
-struct cache {
-  struct audio_frame *frame;
-  struct cache *next;
-  struct cache *prev;
 };
 
 struct missing_frames {

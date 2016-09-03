@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 2.6)
 project(songcast-receiver)
-add_executable(songcast-receiver main.c player.c timespec.c)
+add_executable(songcast-receiver main.c player.c timespec.c output.c)
 target_link_libraries(songcast-receiver pulse-simple pulse xml2 uriparser)
 
 find_package(LibXml2 REQUIRED)
