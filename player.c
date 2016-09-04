@@ -262,7 +262,9 @@ void try_start(void) {
 
   int64_t time_left = info.start - now_usec();
 
-  if (available_usec + time_left < latency_usec - offset || info.start == 0)
+  printf("%li %li %li\n", available_usec + time_left - latency_usec - offset, info.start);
+
+  if (available_usec + time_left - latency_usec > offset || info.start == 0)
     return;
 
   printf("Time left %liusec, available_usec %uusec, -> %liusec\n", time_left, available_usec, available_usec + time_left);
