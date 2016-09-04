@@ -108,26 +108,12 @@ void print_cache(struct cache *cache) {
 }
 
 void stop_playback(void) {
-  #if 0
-  pa_threaded_mainloop_lock(G.mainloop);
-  if (G.stream) {
-    pa_operation *o;
-    o = pa_stream_cork(G.stream, 1, success_cb, G.mainloop);
-    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        pa_threaded_mainloop_wait(G.mainloop);
-
-    pa_operation_unref(o);
-
-    o = pa_stream_flush(G.stream, success_cb, G.mainloop);
-    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        pa_threaded_mainloop_wait(G.mainloop);
-
-    pa_operation_unref(o);
-  }
+  // TODO drain stream if needed
+  // TODO close stream
+  // TODO set state to STOPPED
 
   G.state = STOPPED;
-  pa_threaded_mainloop_unlock(G.mainloop);
-#endif
+  stop_stream(&G.pulse);
 }
 
 void player_init(void) {
@@ -272,18 +258,18 @@ void try_start(void) {
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
   pthread_mutex_unlock(&G.mutex);
 
-  uint64_t offset = 50e3;
+  int64_t offset = 50e3;
 
-  if (available_usec < latency_usec - offset || info.start == 0)
+  int64_t time_left = info.start - now_usec();
+
+  if (available_usec + time_left < latency_usec - offset || info.start == 0)
     return;
 
-  create_stream(&G.pulse, &start->ss);
+  printf("Time left %liusec, available_usec %uusec, -> %liusec\n", time_left, available_usec, available_usec + time_left);
 
   printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
 
-  // TODO calculate start time of buffer, taking all frames into account
-
-  assert(info.start > now_usec());
+  G.state = STARTING;
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -292,8 +278,7 @@ void try_start(void) {
     .tlength = pa_usec_to_bytes(offset, &start->ss),
   };
 
-  G.state = STARTING;
-
+  create_stream(&G.pulse, &start->ss);
   connect_stream(&G.pulse, &bufattr);
 
   pa_threaded_mainloop_lock(G.pulse.mainloop);
@@ -303,9 +288,11 @@ void try_start(void) {
   uint8_t *silence = calloc(1, silence_length);
 
   int64_t due = info.start - now_usec();
-  assert(due > 0);
 
-  size_t seek = pa_usec_to_bytes(due, &start->ss);
+  ssize_t seek = pa_usec_to_bytes(due < 0 ? -due : due, &start->ss);
+
+  if (due < 0)
+    seek = -seek;
 
   int r = pa_stream_write(G.pulse.stream, silence, silence_length, NULL, seek - silence_length, PA_SEEK_RELATIVE_ON_READ);
   free(silence);
@@ -338,7 +325,12 @@ void play_audio(size_t writable) {
            writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
            info.available, available_usec);
 
-    assert(info.available >= writable);
+    if (info.available < writable) {
+      printf("Not enough data. Stopping.");
+      pthread_mutex_unlock(&G.mutex);
+      stop_playback();
+      return;
+    }
     //assert(available_usec > 20e3);
     // TODO check if we have at least writable + 20ms more, else use whatever we have to fade out.
   }
@@ -418,13 +410,8 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
       try_start();
   }
 
-  // TODO derive chunks from cache here
-  // TODO remove any overdue frames. anything due in less than CHUNK_SIZE usecs?
   // TODO check if cache is empty and stop? drop it? also at mostly empty?
   // TODO how to handle format changes?
-
-//  if (G.state == PLAYING)
-//    write_data();
 
   // Don't send resend requests when the frame was an answer.
   if (!aframe->resent && G.cache != NULL)

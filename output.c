@@ -37,30 +37,6 @@ void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void drain(void) {
-  #if 0
-  printf("Draining.\n");
-
-  if (G.stream == NULL)
-    return;
-
-  pa_threaded_mainloop_lock(G.mainloop);
-
-  pa_operation *o = pa_stream_drain(G.stream, success_cb, G.mainloop);
-  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-      pa_threaded_mainloop_wait(G.mainloop);
-
-  pa_operation_unref(o);
-
-  assert(pa_stream_disconnect(G.stream) == 0);
-
-  pa_stream_unref(G.stream);
-  G.stream = NULL;
-
-  pa_threaded_mainloop_unlock(G.mainloop);
-  #endif
-}
-
 void create_stream(struct pulse *pulse, pa_sample_spec *ss) {
   assert(pulse->stream == NULL);
 
@@ -160,6 +136,28 @@ void output_init(struct pulse *pulse) {
   pa_threaded_mainloop_unlock(pulse->mainloop);
 
   printf("Pulseaudio ready.\n");
+}
+
+void stop_stream(struct pulse *pulse) {
+  printf("Draining.\n");
+
+  assert(pulse->stream != NULL);
+
+  pa_operation *o = pa_stream_drain(pulse->stream, NULL, NULL);
+  if (o != NULL)
+    pa_operation_unref(o);
+
+  printf("Drain complete\n");
+
+
+  assert(pa_stream_disconnect(pulse->stream) == 0);
+
+  pa_stream_unref(pulse->stream);
+  pulse->stream = NULL;
+}
+
+void close_stream(struct pulse *pulse) {
+
 }
 
 #if 0
