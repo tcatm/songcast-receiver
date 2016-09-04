@@ -38,6 +38,11 @@
 
 enum PlayerState {STOPPED, STARTING, PLAYING};
 
+struct cache_info {
+  size_t available;
+  uint64_t start;
+};
+
 struct cache {
   int start_seqnum;
   int latest_index;
@@ -62,7 +67,7 @@ bool same_format(struct audio_frame *a, struct audio_frame *b);
 void free_frame(struct audio_frame *frame);
 void remove_old_frames(struct cache *cache, uint64_t now_usec);
 void play_audio(size_t writable);
-pa_usec_t cache_continuous_size(struct cache *cache);
+struct cache_info cache_continuous_size(struct cache *cache);
 
 // functions
 uint64_t now_usec(void) {
@@ -100,9 +105,9 @@ void print_cache(struct cache *cache) {
     }
   }
 
-  size_t size = cache_continuous_size(G.cache);
+  struct cache_info info = cache_continuous_size(G.cache);
 
-  printf("] (%i byte)\n", size);
+  printf("] (%i byte)\n", info.available);
   pthread_mutex_unlock(&G.mutex);
 }
 
@@ -223,11 +228,13 @@ bool same_format(struct audio_frame *a, struct audio_frame *b) {
   return pa_sample_spec_equal(&a->ss, &b->ss) && a->latency == b->latency;
 }
 
-size_t cache_continuous_size(struct cache *cache) {
+struct cache_info cache_continuous_size(struct cache *cache) {
   assert(cache != NULL);
 
   struct audio_frame *last = NULL;
   size_t size = 0;
+
+  uint64_t start_usec = 0;
 
   for (int index = 0; index <= cache->latest_index; index++) {
     int pos = cache_pos(cache, index);
@@ -239,6 +246,12 @@ size_t cache_continuous_size(struct cache *cache) {
     if (last != NULL && !same_format(last, frame))
       break;
 
+    if (!frame->resent && frame->audio == frame->readptr) {
+      uint64_t ts = frame->ts_due_usec - pa_bytes_to_usec(size, &frame->ss);
+      if (start_usec == 0 || ts < start_usec)
+        start_usec = ts;
+    }
+
     size += frame->audio_length;
 
     if (frame->halt)
@@ -247,24 +260,25 @@ size_t cache_continuous_size(struct cache *cache) {
     last = frame;
   }
 
-  return size;
+  return (struct cache_info){
+    .available = size,
+    .start = start_usec
+  };
 }
 
 void try_start(void) {
   pthread_mutex_lock(&G.mutex);
-  size_t available = cache_continuous_size(G.cache);
+  struct cache_info info = cache_continuous_size(G.cache);
 
   struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
 
-  pa_usec_t available_usec = pa_bytes_to_usec(available, &start->ss);
+  pa_usec_t available_usec = pa_bytes_to_usec(info.available, &start->ss);
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
-  int64_t due_at = start->ts_due_usec;
-
   pthread_mutex_unlock(&G.mutex);
 
   uint64_t offset = 50e3;
 
-  if (available_usec < latency_usec - offset)
+  if (available_usec < latency_usec - offset || info.start == 0)
     return;
 
   create_stream(&G.pulse, &start->ss);
@@ -273,7 +287,7 @@ void try_start(void) {
 
   // TODO calculate start time of buffer, taking all frames into account
 
-  assert(due_at > now_usec());
+  assert(info.start > now_usec());
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -292,7 +306,7 @@ void try_start(void) {
   size_t silence_length = request;
   uint8_t *silence = calloc(1, silence_length);
 
-  int64_t due = due_at - now_usec();
+  int64_t due = info.start - now_usec();
   assert(due > 0);
 
   size_t seek = pa_usec_to_bytes(due, &start->ss);
@@ -319,16 +333,16 @@ void write_data(size_t writable) {
 void play_audio(size_t writable) {
   pthread_mutex_lock(&G.mutex);
 
-  size_t available = cache_continuous_size(G.cache);
+  struct cache_info info = cache_continuous_size(G.cache);
   size_t written = 0;
 
   if (writable > 0) {
-    pa_usec_t available_usec = pa_bytes_to_usec(available, pa_stream_get_sample_spec(G.pulse.stream));
+    pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(G.pulse.stream));
     printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
            writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
-           available, available_usec);
+           info.available, available_usec);
 
-    assert(available >= writable);
+    assert(info.available >= writable);
     //assert(available_usec > 20e3);
     // TODO check if we have at least writable + 20ms more, else use whatever we have to fade out.
   }
