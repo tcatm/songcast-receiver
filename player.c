@@ -32,7 +32,7 @@
 // - can i move latency_to_usec to this file? does output need it?
 // - chunks.c/h wieder entfernen
 
-#define CACHE_SIZE 1000  // frames
+#define CACHE_SIZE 2000  // frames
 
 enum PlayerState {STOPPED, STARTING, PLAYING};
 
@@ -84,8 +84,11 @@ void print_cache(struct cache *cache) {
 
   printf("%10u [", cache->start_seqnum);
 
-  for (int index = 0; index <= cache->size; index++) {
+  for (int index = 0; index < cache->size; index++) {
     int pos = cache_pos(cache, index);
+
+    if (index > 0 && index%100 == 0)
+      printf("]\n           [");
 
     if (index > cache->latest_index) {
       printf(" ");
@@ -258,14 +261,14 @@ void try_start(void) {
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
   pthread_mutex_unlock(&G.mutex);
 
-  int64_t offset = 50e3;
+  int64_t offset = latency_usec / 2;
 
   int64_t time_left = info.start - now_usec();
 
-  if (available_usec + time_left - latency_usec > offset || info.start == 0)
-    return;
-
   printf("Time left %liusec, available_usec %uusec, -> %liusec\n", time_left, available_usec, available_usec + time_left);
+
+  if (available_usec + time_left < offset || info.start == 0)
+    return;
 
   printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
 
@@ -301,7 +304,7 @@ void try_start(void) {
 
   pa_threaded_mainloop_unlock(G.pulse.mainloop);
 
-  printf("due in %liusec, seeking %u bytes\n", due, seek);
+  printf("due in %liusec, seeking %li bytes\n", due, seek);
 
   printf("try_start finished.\n");
 }
@@ -404,10 +407,10 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   pthread_mutex_unlock(&G.mutex);
 
   if (G.cache != NULL) {
-    //print_cache(G.cache);
-
-    if (G.state == STOPPED)
+    if (G.state == STOPPED) {
+      print_cache(G.cache);
       try_start();
+    }
   }
 
   // TODO check if cache is empty and stop? drop it? also at mostly empty?
