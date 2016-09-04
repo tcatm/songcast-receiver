@@ -13,5 +13,4 @@ void output_init(struct pulse *pulse);
 void create_stream(struct pulse *pulse, pa_sample_spec *ss);
 void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr);
 void trigger_stream(struct pulse *pulse, pa_usec_t delay);
-pa_usec_t get_latency(struct pulse *pulse);
 void drain(void);

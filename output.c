@@ -32,7 +32,7 @@ void stream_underflow_cb(pa_stream *stream, void *userdata) {
 }
 
 void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
-  printf("Request for %i\n", size);
+//  printf("Request for %i\n", size);
   write_data(size);
   pa_threaded_mainloop_signal(mainloop, 0);
 }
@@ -130,35 +130,6 @@ void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct time
   o = pa_stream_trigger(pulse->stream, success_cb, pulse->mainloop);
   if (o != NULL)
     pa_operation_unref(o);
-}
-
-pa_usec_t get_latency(struct pulse *pulse) {
-  assert(pulse->stream != NULL);
-
-  pa_threaded_mainloop_lock(pulse->mainloop);
-
-  pa_operation *o;
-
-  o = pa_stream_update_timing_info(pulse->stream, success_cb, pulse->mainloop);
-  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-      pa_threaded_mainloop_wait(pulse->mainloop);
-
-  pa_operation_unref(o);
-
-  const pa_sample_spec *ss = pa_stream_get_sample_spec(pulse->stream);
-  const pa_timing_info *ti = pa_stream_get_timing_info(pulse->stream);
-
-  assert(ti != NULL);
-  assert(!ti->write_index_corrupt);
-
-  pa_usec_t wt = pa_bytes_to_usec((uint64_t)ti->write_index, ss);
-  pa_usec_t rt;
-
-  assert(!pa_stream_get_time(pulse->stream, &rt));
-
-  pa_threaded_mainloop_unlock(pulse->mainloop);
-
-  return wt - rt;
 }
 
 void output_init(struct pulse *pulse) {
