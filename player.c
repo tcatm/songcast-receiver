@@ -32,9 +32,7 @@
 // - can i move latency_to_usec to this file? does output need it?
 // - chunks.c/h wieder entfernen
 
-#define CACHE_SIZE 100    // frames
-#define CHUNK_SIZE 20000 // usec
-#define MAX_CHUNKS 100
+#define CACHE_SIZE 1000  // frames
 
 enum PlayerState {STOPPED, STARTING, PLAYING};
 
