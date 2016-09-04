@@ -54,8 +54,6 @@ struct {
   enum PlayerState state;
   bool first_run;
   struct cache *cache;
-  struct audio_chunk *chunks[MAX_CHUNKS];
-  int chunk_counter;
   struct pulse pulse;
 } G = {};
 
