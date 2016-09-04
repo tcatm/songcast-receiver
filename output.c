@@ -32,8 +32,9 @@ void stream_underflow_cb(pa_stream *stream, void *userdata) {
 }
 
 void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
-//  printf("Request for %i\n", size);
+  printf("Request for %i\n", size);
   write_data(size);
+  pa_threaded_mainloop_signal(mainloop, 0);
 }
 
 void drain(void) {
@@ -82,7 +83,7 @@ void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
   pa_threaded_mainloop_lock(pulse->mainloop);
 
   pa_stream_flags_t stream_flags;
-  stream_flags =  PA_STREAM_START_CORKED | PA_STREAM_NOT_MONOTONIC |
+  stream_flags =  PA_STREAM_NOT_MONOTONIC |
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
                   // | PA_STREAM_VARIABLE_RATE;
 

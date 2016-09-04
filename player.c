@@ -36,7 +36,7 @@
 #define CHUNK_SIZE 20000 // usec
 #define MAX_CHUNKS 100
 
-enum PlayerState {STOPPED, PLAYING};
+enum PlayerState {STOPPED, STARTING, PLAYING};
 
 struct cache {
   int start_seqnum;
@@ -61,6 +61,7 @@ bool process_frame(struct audio_frame *frame);
 bool same_format(struct audio_frame *a, struct audio_frame *b);
 void free_frame(struct audio_frame *frame);
 void remove_old_frames(struct cache *cache, uint64_t now_usec);
+void play_audio(size_t writable);
 pa_usec_t cache_continuous_size(struct cache *cache);
 
 // functions
@@ -257,10 +258,11 @@ void try_start(void) {
 
   pa_usec_t available_usec = pa_bytes_to_usec(available, &start->ss);
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
+  int64_t due_at = start->ts_due_usec;
 
   pthread_mutex_unlock(&G.mutex);
 
-  uint64_t offset = 30e3;
+  uint64_t offset = 100e3;
 
   if (available_usec < latency_usec - offset)
     return;
@@ -269,43 +271,74 @@ void try_start(void) {
 
   printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
 
-    // TODO calculate start time of buffer
+    // TODO calculate start time of buffer, taking all frames into account
     // TODO start stream at the right time
 
-  assert(start->ts_due_usec > now_usec());
+  assert(due_at > now_usec());
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
     .minreq = -1,
     .prebuf = 0,
-    .tlength = pa_usec_to_bytes(offset, &start->ss),
+    .tlength = pa_usec_to_bytes(60e3, &start->ss),
   };
 
   printf("tlength %i\n", bufattr.tlength);
 
-  G.state = PLAYING;
+  G.state = STARTING;
 
   connect_stream(&G.pulse, &bufattr);
 
-  pa_usec_t stream_latency = get_latency(&G.pulse);
+  // TODO figure out how many bytes to skip to meet deadline
+  // TODO start stream with silence? then seek?
 
-  printf("stream latency %uusec\n", stream_latency);
+  uint64_t ts_writestart = now_usec();
 
-  printf("%lu %lu %lu\n", start->ts_recv_usec, start->ts_due_usec, latency_usec);
 
-  // TODO fix memory corruption in audio_frame, first bytes...
-
-  int64_t due = start->ts_recv_usec - (int64_t)now_usec() + latency_usec - stream_latency;
-  printf("due in %iusec, delaying\n", due);
+  // TODO is there a uncorking latency?
+  int64_t due = due_at - now_usec();
+  printf("due in %liusec, delaying\n", due);
   assert(due > 0);
+//  trigger_stream(&G.pulse, due);
 
-  trigger_stream(&G.pulse, due);
+pa_usec_t latency;
+int negative;
 
-  printf("START\n");
+pa_stream_get_latency(G.pulse.stream, &latency, &negative);
+
+printf("lat %uusec\n", latency);
+
+
+  size_t seek = pa_usec_to_bytes(due, &start->ss);
+  printf("seeking %u\n", seek);
+
+  size_t silence_length = pa_usec_to_bytes(1e3, &start->ss);
+  uint8_t *silence = calloc(1, silence_length);
+
+  pa_threaded_mainloop_lock(G.pulse.mainloop);
+
+  int r = pa_stream_write(G.pulse.stream, silence, silence_length, NULL, seek, PA_SEEK_RELATIVE_ON_READ);
+
+  free(silence);
+
+  size_t writable = pa_stream_writable_size(G.pulse.stream);
+  play_audio(writable);
+
+  pa_threaded_mainloop_unlock(G.pulse.mainloop);
+
+  G.state = PLAYING;
+
+  printf("try_start finished.\n");
 }
 
 void write_data(size_t writable) {
-  assert(G.state == PLAYING);
+  if (G.state != PLAYING)
+    return;
+
+  play_audio(writable);
+}
+
+void play_audio(size_t writable) {
   pthread_mutex_lock(&G.mutex);
 
   size_t available = cache_continuous_size(G.cache);
@@ -362,23 +395,9 @@ void write_data(size_t writable) {
     }
   }
 
-//  printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(G.pulse.stream)));
+  printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(G.pulse.stream)));
 
   pthread_mutex_unlock(&G.mutex);
-}
-
-void play_audio(void) {
-  assert(G.cache != NULL);
-
-  assert(!pa_stream_is_corked(G.pulse.stream));
-
-  pa_threaded_mainloop_lock(G.pulse.mainloop);
-
-  ssize_t writable = pa_stream_writable_size(G.pulse.stream);
-
-  write_data(writable);
-
-  pa_threaded_mainloop_unlock(G.pulse.mainloop);
 }
 
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
