@@ -6,6 +6,8 @@
 
 extern void write_data(size_t size);
 
+void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata);
+
 pa_usec_t latency_to_usec(int samplerate, int latency) {
   int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
   return latency * 1e6 / (256 * multiplier);
@@ -80,13 +82,14 @@ void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
   pa_threaded_mainloop_lock(pulse->mainloop);
 
   pa_stream_flags_t stream_flags;
-  stream_flags =  PA_STREAM_NOT_MONOTONIC |
+  stream_flags =  PA_STREAM_START_CORKED | PA_STREAM_NOT_MONOTONIC |
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
                   // | PA_STREAM_VARIABLE_RATE;
 
   // Connect stream to the default audio output sink
   assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, NULL, NULL) == 0);
 
+  printf("Connect\n");
   // Wait for the stream to be ready
   while (true) {
       pa_stream_state_t stream_state = pa_stream_get_state(pulse->stream);
@@ -96,7 +99,65 @@ void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
       pa_threaded_mainloop_wait(pulse->mainloop);
   }
 
+  printf("Connected\n");
+
   pa_threaded_mainloop_unlock(pulse->mainloop);
+}
+
+void trigger_stream(struct pulse *pulse, pa_usec_t delay) {
+  pa_usec_t when = pa_rtclock_now() + delay;
+  printf(" at %uusec\n", when);
+
+  pa_context_rttime_new(pulse->context, when, stream_trigger_cb, pulse);
+}
+
+void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata) {
+  struct pulse *pulse = userdata;
+
+  assert(pulse->stream != NULL);
+
+  printf("now %uusec\n", pa_rtclock_now());
+
+  pa_operation *o;
+
+  assert(pa_stream_is_corked(pulse->stream));
+
+  o = pa_stream_cork(pulse->stream, 0, success_cb, pulse->mainloop);
+  if (o != NULL)
+    pa_operation_unref(o);
+
+  o = pa_stream_trigger(pulse->stream, success_cb, pulse->mainloop);
+  if (o != NULL)
+    pa_operation_unref(o);
+}
+
+pa_usec_t get_latency(struct pulse *pulse) {
+  assert(pulse->stream != NULL);
+
+  pa_threaded_mainloop_lock(pulse->mainloop);
+
+  pa_operation *o;
+
+  o = pa_stream_update_timing_info(pulse->stream, success_cb, pulse->mainloop);
+  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
+      pa_threaded_mainloop_wait(pulse->mainloop);
+
+  pa_operation_unref(o);
+
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(pulse->stream);
+  const pa_timing_info *ti = pa_stream_get_timing_info(pulse->stream);
+
+  assert(ti != NULL);
+  assert(!ti->write_index_corrupt);
+
+  pa_usec_t wt = pa_bytes_to_usec((uint64_t)ti->write_index, ss);
+  pa_usec_t rt;
+
+  assert(!pa_stream_get_time(pulse->stream, &rt));
+
+  pa_threaded_mainloop_unlock(pulse->mainloop);
+
+  return wt - rt;
 }
 
 void output_init(struct pulse *pulse) {

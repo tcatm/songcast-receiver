@@ -260,27 +260,25 @@ void try_start(void) {
 
   pthread_mutex_unlock(&G.mutex);
 
-  if (available_usec < latency_usec - 30e3)
+  uint64_t offset = 30e3;
+
+  if (available_usec < latency_usec - offset)
     return;
 
   create_stream(&G.pulse, &start->ss);
 
   printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
 
-  uint64_t now = now_usec();
-  int64_t due = start->ts_due_usec - now;
-  assert(due > 0);
-  printf("due in %uusec\n", due);
-
     // TODO calculate start time of buffer
     // TODO start stream at the right time
 
+  assert(start->ts_due_usec > now_usec());
 
   pa_buffer_attr bufattr = {
-    .maxlength = pa_usec_to_bytes(due, &start->ss),
-    .minreq = 0,
-    .prebuf = pa_usec_to_bytes(due, &start->ss),
-    .tlength = pa_usec_to_bytes(due, &start->ss),
+    .maxlength = -1,
+    .minreq = -1,
+    .prebuf = 0,
+    .tlength = pa_usec_to_bytes(offset, &start->ss),
   };
 
   printf("tlength %i\n", bufattr.tlength);
@@ -289,10 +287,21 @@ void try_start(void) {
 
   connect_stream(&G.pulse, &bufattr);
 
-  uint64_t now_again = now_usec();
+  pa_usec_t stream_latency = get_latency(&G.pulse);
 
+  printf("stream latency %uusec\n", stream_latency);
 
-  printf("START, took %uusec\n", now_again - now);
+  printf("%lu %lu %lu\n", start->ts_recv_usec, start->ts_due_usec, latency_usec);
+
+  // TODO fix memory corruption in audio_frame, first bytes...
+
+  int64_t due = start->ts_recv_usec - (int64_t)now_usec() + latency_usec - stream_latency;
+  printf("due in %iusec, delaying\n", due);
+  assert(due > 0);
+
+  trigger_stream(&G.pulse, due);
+
+  printf("START\n");
 }
 
 void write_data(size_t writable) {

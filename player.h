@@ -7,6 +7,7 @@
 #include "ohm_v1.h"
 
 struct audio_frame {
+  uint64_t dummy;
   uint64_t ts_recv_usec;
   uint64_t ts_due_usec;
   unsigned int seqnum;
