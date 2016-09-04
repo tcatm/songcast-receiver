@@ -261,13 +261,13 @@ void try_start(void) {
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
   pthread_mutex_unlock(&G.mutex);
 
-  int64_t offset = latency_usec / 2;
+  int64_t offset = 50e3;
 
   int64_t time_left = info.start - now_usec();
 
   printf("Time left %liusec, available_usec %uusec, -> %liusec\n", time_left, available_usec, available_usec + time_left);
 
-  if (available_usec + time_left < offset || info.start == 0)
+  if (available_usec + time_left < latency_usec - offset || info.start == 0)
     return;
 
   printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
