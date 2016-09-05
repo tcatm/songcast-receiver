@@ -48,6 +48,7 @@ void free_frame(struct audio_frame *frame);
 void remove_old_frames(struct cache *cache, uint64_t now_usec);
 void play_audio(size_t writable);
 struct cache_info cache_continuous_size(struct cache *cache);
+void discard_cache_through(struct cache *cache, int discard);
 
 // functions
 uint64_t now_usec(void) {
@@ -256,68 +257,84 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   return info;
 }
 
+void try_prepare(void) {
+  pthread_mutex_lock(&G.mutex);
+
+  struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
+
+  if (start == NULL)
+    goto end;
+
+  if (G.pulse.stream && !pa_sample_spec_equal(pa_stream_get_sample_spec(G.pulse.stream), &start->ss)) {
+    stop_stream(&G.pulse);
+  }
+
+  G.state = STARTING;
+
+  if (G.pulse.stream == NULL) {
+    pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
+
+    pa_buffer_attr bufattr = {
+      .maxlength = -1,
+      .minreq = -1,
+      .prebuf = 0,
+      .tlength = pa_usec_to_bytes(latency_usec / 2, &start->ss),
+    };
+
+    create_stream(&G.pulse, &start->ss);
+    connect_stream(&G.pulse, &bufattr);
+  }
+
+end:
+  pthread_mutex_unlock(&G.mutex);
+}
+
 void try_start(void) {
+  if (!G.pulse.stream) {
+    printf("No stream?!\n");
+    return;
+  }
+
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
+  size_t request = pa_stream_writable_size(G.pulse.stream);
+
   pthread_mutex_lock(&G.mutex);
   struct cache_info info = cache_continuous_size(G.cache);
 
-  if (info.available == 0) {
+  if (info.available == 0 && !info.halt) {
     pthread_mutex_unlock(&G.mutex);
     return;
   }
 
-  struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
-
-  pa_usec_t available_usec = pa_bytes_to_usec(info.available, &start->ss);
-  pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
-  pthread_mutex_unlock(&G.mutex);
+  pa_usec_t available_usec = pa_bytes_to_usec(info.available, ss);
 
   // Don't start if there is less than 5 seconds of audio to play before
   // encountering the next halt frame.
   if (info.halt && available_usec < 5e6) {
     printf("halt index %i\n", info.halt_index);
     discard_cache_through(G.cache, info.halt_index);
+    pthread_mutex_unlock(&G.mutex);
     return;
   }
 
-  // TODO determine how much data we need and how much we possibly could have (latency!)
-  // TODO maybe create stream on first valid frame, play silence and fill buffer later?
-  int64_t offset = 100e3;
+  pthread_mutex_unlock(&G.mutex);
 
-  int64_t time_left = info.start - now_usec();
-
-  printf("Time left %liusec, available_usec %uusec, -> %liusec\n", time_left, available_usec, available_usec + time_left);
-
-  if (available_usec + time_left < offset || info.start == 0)
+  if (info.available < request || info.start == 0)
     return;
-
-  printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
-
-  G.state = STARTING;
-
-  pa_buffer_attr bufattr = {
-    .maxlength = -1,
-    .minreq = -1,
-    .prebuf = 0,
-    .tlength = pa_usec_to_bytes(offset, &start->ss),
-  };
-
-  create_stream(&G.pulse, &start->ss);
-  connect_stream(&G.pulse, &bufattr);
 
   pa_threaded_mainloop_lock(G.pulse.mainloop);
 
-  size_t request = pa_stream_writable_size(G.pulse.stream);
-  size_t silence_length = request;
-  uint8_t *silence = calloc(1, silence_length);
-
+  uint8_t *silence = calloc(1, request);
   int64_t due = info.start - now_usec();
-
-  ssize_t seek = pa_usec_to_bytes(due < 0 ? -due : due, &start->ss);
+  ssize_t seek = pa_usec_to_bytes(due < 0 ? -due : due, ss);
 
   if (due < 0)
     seek = -seek;
 
-  int r = pa_stream_write(G.pulse.stream, silence, silence_length, NULL, seek - silence_length, PA_SEEK_RELATIVE_ON_READ);
+  seek -= request;
+
+  int r = pa_stream_write(G.pulse.stream, silence, request, NULL, seek, PA_SEEK_RELATIVE_ON_READ);
+
   free(silence);
 
   G.state = PLAYING;
@@ -426,8 +443,9 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
 
   pthread_mutex_unlock(&G.mutex);
 
-  if (G.cache != NULL && G.state == STOPPED) {
+  if (G.cache != NULL && G.state != PLAYING) {
       print_cache(G.cache);
+      try_prepare();
       try_start();
   }
 
