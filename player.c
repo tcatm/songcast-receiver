@@ -12,25 +12,8 @@
 #include "player.h"
 #include "output.h"
 
-// GOALS
-// [ ] process frames
-// [ ] start caching
-// [ ] fill cache
-// [ ] request missing frames
-// [ ] derive a list of chunks from cache
-
-// TODO
-// - if there is an existing stream, check if sample spec match and seqnum is expected. append
-// - else, stop stream, create new one
-// - fill cache from beginning
-// - start with first non-resent frame
-// - create chunks from frames
-// - calculate frame timestamp from average of all received non-resent timestamps
-// - drop stream and cache when cache runs empty
-// - erstmal diese datei schön machen bevor die ausgabe eingebaut wird!
-// - determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
-// - can i move latency_to_usec to this file? does output need it?
-// - chunks.c/h wieder entfernen
+// TODO drop stream and cache when cache runs empty
+// TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 
 #define CACHE_SIZE 2000  // frames
 
@@ -77,6 +60,22 @@ int cache_pos(struct cache *cache, int index) {
   return (index + cache->offset) % cache->size;
 }
 
+void print_state(enum PlayerState state) {
+  switch (state) {
+    case STOPPED:
+      puts("STOPPED");
+      break;
+    case STARTING:
+      puts("STARTING");
+      break;
+    case PLAYING:
+      puts("PLAYING");
+      break;
+    default:
+      assert(false && state != "KNOWN STATE");
+  }
+}
+
 void print_cache(struct cache *cache) {
   pthread_mutex_lock(&G.mutex);
 
@@ -111,9 +110,7 @@ void print_cache(struct cache *cache) {
 }
 
 void stop_playback(void) {
-  // TODO drain stream if needed
-  // TODO close stream
-  // TODO set state to STOPPED
+  print_state(G.state);
 
   G.state = STOPPED;
   stop_stream(&G.pulse);
@@ -152,7 +149,6 @@ bool frame_to_sample_spec(pa_sample_spec *ss, int rate, int channels, int bitdep
 }
 
 struct audio_frame *parse_frame(ohm1_audio *frame) {
-  // TODO copy audio data
   struct audio_frame *aframe = malloc(sizeof(struct audio_frame));
 
   if (aframe == NULL)
@@ -261,13 +257,14 @@ void try_start(void) {
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
   pthread_mutex_unlock(&G.mutex);
 
-  int64_t offset = 50e3;
+  // TODO determine how much data we need and how much we possibly could have (latency!)
+  int64_t offset = 100e3;
 
   int64_t time_left = info.start - now_usec();
 
   printf("Time left %liusec, available_usec %uusec, -> %liusec\n", time_left, available_usec, available_usec + time_left);
 
-  if (available_usec + time_left < latency_usec - offset || info.start == 0)
+  if (available_usec + time_left < offset || info.start == 0)
     return;
 
   printf("latency %iusec, available %uusec\n", latency_usec, available_usec);
@@ -330,8 +327,8 @@ void play_audio(size_t writable) {
 
     if (info.available < writable) {
       printf("Not enough data. Stopping.");
-      pthread_mutex_unlock(&G.mutex);
       stop_playback();
+      pthread_mutex_unlock(&G.mutex);
       return;
     }
     //assert(available_usec > 20e3);
@@ -391,7 +388,6 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
 
   uint64_t now = now_usec();
 
-  // TODO is ts_recv_usec really needed?
   // TODO incorporate any network latencies and such into ts_due_usec
   aframe->ts_recv_usec = (long long)ts->tv_sec * 1000000 + (ts->tv_nsec + 500) / 1000;
   aframe->ts_due_usec = latency_to_usec(aframe->ss.rate, aframe->latency) + aframe->ts_recv_usec;
@@ -401,6 +397,7 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
     remove_old_frames(G.cache, now);
 
   bool consumed = process_frame(aframe);
+
   if (!consumed)
     free_frame(aframe);
 
@@ -411,10 +408,15 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
       print_cache(G.cache);
       try_start();
     }
-  }
 
-  // TODO check if cache is empty and stop? drop it? also at mostly empty?
-  // TODO how to handle format changes?
+    if (G.state == PLAYING) {
+      // TODO scan cache for sample spec mismatches
+      // TODO stop playback
+      // TODO act accordingly
+    }
+
+    // TODO check if cache is empty and stop? drop it? also at mostly empty?
+  }
 
   // Don't send resend requests when the frame was an answer.
   if (!aframe->resent && G.cache != NULL)
@@ -496,22 +498,3 @@ bool process_frame(struct audio_frame *frame) {
 
   return true;
 }
-
-/* - Cache grows from the start instead of end.
- * - It is shifted when chunks are cut from the beginning.
- * - If the cache is empty, playback stops and is reset.
- *
- * New algorithm:
- * - list of chunks of each 20ms
- * - cache feeds chunks
- * - chunk may contain halt flag. may be shorter than 20ms.
- * - write callback writes next chunk if there is at least another complete chunk following
- * - if no successor is ready, use this chunk to fade out audio
- * - if this is the first chunk, fade in
- * - if halt chunk, drain audio after writing data. handle case where chunk has zero length
- * - halt disconnects the stream.
- * - underrun disconnects, too.
- *
- * basically: frames feed cache. cache feeds chunks.
- *            stream chews chunks.
- */
