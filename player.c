@@ -157,7 +157,6 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
   if (aframe == NULL)
     return NULL;
 
-  aframe->ts_network = ntohl(frame->network_timestamp);
   aframe->seqnum = ntohl(frame->frame);
   aframe->latency = ntohl(frame->media_latency);
   aframe->audio_length = frame->channels * frame->bitdepth * ntohs(frame->samplecount) / 8;
@@ -169,6 +168,9 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
     free(aframe);
     return NULL;
   }
+
+  aframe->ts_network = latency_to_usec(aframe->ss.rate, ntohl(frame->network_timestamp));
+  aframe->ts_media = latency_to_usec(aframe->ss.rate, ntohl(frame->media_timestamp));
 
   aframe->audio = malloc(aframe->audio_length);
   aframe->readptr = aframe->audio;

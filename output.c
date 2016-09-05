@@ -8,9 +8,9 @@ extern void write_data(size_t size);
 
 void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata);
 
-pa_usec_t latency_to_usec(int samplerate, int latency) {
+pa_usec_t latency_to_usec(int samplerate, uint64_t latency) {
   int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
-  return latency * 1e6 / (256 * multiplier);
+  return latency * 1000000 / (256 * multiplier);
 }
 
 void context_state_cb(pa_context* context, void* mainloop) {
