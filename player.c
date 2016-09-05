@@ -22,6 +22,9 @@ enum PlayerState {STOPPED, STARTING, PLAYING};
 struct cache_info {
   size_t available;
   uint64_t start;
+  int halt_index;
+  bool halt;
+  bool format_change;
 };
 
 struct cache {
@@ -72,7 +75,7 @@ void print_state(enum PlayerState state) {
       puts("PLAYING");
       break;
     default:
-      assert(false && state != "KNOWN STATE");
+      assert(false && "UNKNOWN STATE");
   }
 }
 
@@ -89,18 +92,20 @@ void print_cache(struct cache *cache) {
     if (index > 0 && index%100 == 0)
       printf("]\n           [");
 
-    if (index > cache->latest_index) {
-      printf(" ");
-    } else {
-      if (cache->frames[pos] == NULL)
-        printf(".");
-      else {
-        if (cache->frames[pos]->resent)
-          printf("/");
-        else
-          printf("#");
-      }
+    struct audio_frame *frame = cache->frames[pos];
+    char c = '?';
+    int fg = -1;
+    if (frame == NULL)    c = index > cache->latest_index ? ' ' : '.';
+    else {
+      if (frame->halt)    fg = 1;
+      if (frame->resent)  c = '/';
+      else                c = '#';
     }
+
+    if (fg != -1) {
+      printf("\e[3%1im%c\e[m", fg, c);
+    } else
+      printf("%c", c);
   }
 
   struct cache_info info = cache_continuous_size(G.cache);
@@ -213,9 +218,14 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   assert(cache != NULL);
 
   struct audio_frame *last = NULL;
-  size_t size = 0;
 
-  uint64_t start_usec = 0;
+  struct cache_info info = {
+    .available = 0,
+    .halt = false,
+    .format_change = false,
+    .start = 0,
+    .halt_index = -1,
+  };
 
   for (int index = 0; index <= cache->latest_index; index++) {
     int pos = cache_pos(cache, index);
@@ -224,32 +234,35 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     struct audio_frame *frame = G.cache->frames[pos];
 
-    if (last != NULL && !same_format(last, frame))
+    if (last != NULL && !same_format(last, frame)) {
+      info.format_change = true;
       break;
-
-    if (!frame->resent && frame->audio == frame->readptr) {
-      uint64_t ts = frame->ts_due_usec - pa_bytes_to_usec(size, &frame->ss);
-      if (start_usec == 0 || ts < start_usec)
-        start_usec = ts;
     }
 
-    size += frame->audio_length;
+    if (!frame->resent && frame->audio == frame->readptr) {
+      uint64_t ts = frame->ts_due_usec - pa_bytes_to_usec(info.available, &frame->ss);
+      if (info.start == 0 || ts < info.start)
+        info.start = ts;
+    }
 
-    if (frame->halt)
+    info.available += frame->audio_length;
+
+    if (frame->halt) {
+      info.halt_index = index;
+      info.halt = true;
       break;
+    }
 
     last = frame;
   }
 
-  return (struct cache_info){
-    .available = size,
-    .start = start_usec
-  };
+  return info;
 }
 
 void try_start(void) {
   pthread_mutex_lock(&G.mutex);
   struct cache_info info = cache_continuous_size(G.cache);
+
 
   struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
 
@@ -257,7 +270,16 @@ void try_start(void) {
   pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
   pthread_mutex_unlock(&G.mutex);
 
+  // Don't start if there is less than 5 seconds of audio to play before
+  // encountering the next halt frame.
+  if (info.halt && available_usec < 5e6) {
+    printf("halt index %i\n", info.halt_index);
+    discard_cache_through(G.cache, info.halt_index);
+    return;
+  }
+
   // TODO determine how much data we need and how much we possibly could have (latency!)
+  // TODO maybe create stream on first valid frame, play silence and fill buffer later?
   int64_t offset = 100e3;
 
   int64_t time_left = info.start - now_usec();
@@ -325,7 +347,9 @@ void play_audio(size_t writable) {
            writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
            info.available, available_usec);
 
-    if (info.available < writable) {
+    // TODO this is not important if a halt frame is coming up
+    // TODO maybe check after the fact if we have written enough data?
+    if (info.available < writable && !info.halt && !info.format_change) {
       printf("Not enough data. Stopping.");
       stop_playback();
       pthread_mutex_unlock(&G.mutex);
@@ -348,7 +372,12 @@ void play_audio(size_t writable) {
       break;
     }
 
-    assert(!frame->halt);
+    if (frame->halt) {
+      printf("HALT received.\n");
+      stop_playback();
+      pthread_mutex_unlock(&G.mutex);
+      return;
+    }
 
     bool consumed = true;
     void *data = frame->readptr;
@@ -429,10 +458,10 @@ void discard_cache_through(struct cache *cache, int discard) {
   assert(cache != NULL);
   assert(discard < cache->size);
 
-  if (discard <= 0)
+  if (discard < 0)
     return;
 
-  for (int index = 0; index < discard; index++) {
+  for (int index = 0; index <= discard; index++) {
     int pos = cache_pos(cache, index);
 
     if (cache->frames[pos] != NULL) {
@@ -441,15 +470,15 @@ void discard_cache_through(struct cache *cache, int discard) {
     }
   }
 
-  cache->offset += discard;
-  cache->start_seqnum += discard;
-  cache->latest_index -= discard;
+  cache->offset += discard + 1;
+  cache->start_seqnum += discard + 1;
+  cache->latest_index -= discard + 1;
 }
 
 void remove_old_frames(struct cache *cache, uint64_t now_usec) {
   assert(cache != NULL);
 
-  int discard = 0;
+  int discard = -1;
 
   for (int index = 0; index <= cache->latest_index; index++) {
     int pos = cache_pos(cache, index);
