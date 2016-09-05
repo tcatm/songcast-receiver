@@ -328,13 +328,9 @@ void try_start(void) {
 
   uint8_t *silence = calloc(1, request);
   int64_t due = info.start - now_usec();
-  ssize_t seek = pa_usec_to_bytes(due < 0 ? -due : due, ss);
 
-  if (due < 0)
-    seek = -seek;
-
-  seek -= request;
-
+  // (x > 0) - (x < 0) is the sign of x
+  ssize_t seek = ((due > 0) - (due < 0)) * pa_usec_to_bytes(llabs(due), ss) - request;
   int r = pa_stream_write(G.pulse.stream, silence, request, NULL, seek, PA_SEEK_RELATIVE_ON_READ);
 
   free(silence);
