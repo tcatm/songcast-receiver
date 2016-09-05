@@ -12,7 +12,6 @@
 #include "player.h"
 #include "output.h"
 
-// TODO drop stream and cache when cache runs empty
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 
 #define CACHE_SIZE 2000  // frames
@@ -38,7 +37,6 @@ struct cache {
 struct {
   pthread_mutex_t mutex;
   enum PlayerState state;
-  bool first_run;
   struct cache *cache;
   struct pulse pulse;
 } G = {};
@@ -122,7 +120,6 @@ void stop_playback(void) {
 }
 
 void player_init(void) {
-  G.first_run = true;
   G.state = STOPPED;
   G.cache = NULL;
   output_init(&G.pulse);
@@ -263,6 +260,10 @@ void try_start(void) {
   pthread_mutex_lock(&G.mutex);
   struct cache_info info = cache_continuous_size(G.cache);
 
+  if (info.available == 0) {
+    pthread_mutex_unlock(&G.mutex);
+    return;
+  }
 
   struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
 
@@ -341,42 +342,29 @@ void play_audio(size_t writable) {
   struct cache_info info = cache_continuous_size(G.cache);
   size_t written = 0;
 
-  if (writable > 0) {
-    pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(G.pulse.stream));
-    printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
-           writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
-           info.available, available_usec);
-
-    // TODO this is not important if a halt frame is coming up
-    // TODO maybe check after the fact if we have written enough data?
-    if (info.available < writable && !info.halt && !info.format_change) {
-      printf("Not enough data. Stopping.");
-      stop_playback();
-      pthread_mutex_unlock(&G.mutex);
-      return;
-    }
-    //assert(available_usec > 20e3);
-    // TODO check if we have at least writable + 20ms more, else use whatever we have to fade out.
-  }
+  pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(G.pulse.stream));
+  printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
+         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
+         info.available, available_usec);
 
   while (writable > 0) {
     int pos = cache_pos(G.cache, 0);
 
-    if (G.cache->frames[pos] == NULL)
+    if (G.cache->frames[pos] == NULL) {
+      printf("Missing frame.\n");
       break;
+    }
 
     struct audio_frame *frame = G.cache->frames[pos];
 
     if (!pa_sample_spec_equal(pa_stream_get_sample_spec(G.pulse.stream), &frame->ss)) {
-      printf("Sample spec mismatch\n");
+      printf("Sample spec mismatch.\n");
       break;
     }
 
     if (frame->halt) {
       printf("HALT received.\n");
-      stop_playback();
-      pthread_mutex_unlock(&G.mutex);
-      return;
+      break;
     }
 
     bool consumed = true;
@@ -404,9 +392,15 @@ void play_audio(size_t writable) {
     }
   }
 
+  if (writable > 0) {
+    printf("Not enough data. Stopping.\n");
+    stop_playback();
+  }
+
   //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(G.pulse.stream)));
 
   pthread_mutex_unlock(&G.mutex);
+  return;
 }
 
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
@@ -432,19 +426,9 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
 
   pthread_mutex_unlock(&G.mutex);
 
-  if (G.cache != NULL) {
-    if (G.state == STOPPED) {
+  if (G.cache != NULL && G.state == STOPPED) {
       print_cache(G.cache);
       try_start();
-    }
-
-    if (G.state == PLAYING) {
-      // TODO scan cache for sample spec mismatches
-      // TODO stop playback
-      // TODO act accordingly
-    }
-
-    // TODO check if cache is empty and stop? drop it? also at mostly empty?
   }
 
   // Don't send resend requests when the frame was an answer.
