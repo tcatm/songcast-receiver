@@ -275,12 +275,16 @@ void try_prepare(void) {
 
   if (G.pulse.stream == NULL) {
     pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
+    pa_usec_t buffer_length = latency_usec * 0.75;
+
+    if (buffer_length > 100e3)
+      buffer_length = 100e3;
 
     pa_buffer_attr bufattr = {
       .maxlength = -1,
       .minreq = -1,
       .prebuf = 0,
-      .tlength = pa_usec_to_bytes(latency_usec / 2, &start->ss),
+      .tlength = pa_usec_to_bytes(buffer_length, &start->ss),
     };
 
     create_stream(&G.pulse, &start->ss);
