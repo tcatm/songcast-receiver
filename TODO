@@ -11,6 +11,7 @@
 - [X] build code for managing missed frames. sorted list of integers?
 - [X] port to async API
 - [X] PA_STREAM_ADJUST_LATENCY
+- [ ] use monotonic clock
 - [ ] use network timestamps if present, probably during parsing?
 - [ ] if ohz: continually listen for matching zone uri messages and switch if changed
 - [ ] actually close sockets! (ohz)

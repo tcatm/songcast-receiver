@@ -21,6 +21,7 @@ enum PlayerState {STOPPED, STARTING, PLAYING};
 struct cache_info {
   size_t available;
   uint64_t start;
+  uint64_t start_net;
   int halt_index;
   bool halt;
   bool format_change;
@@ -34,11 +35,18 @@ struct cache {
   struct audio_frame *frames[CACHE_SIZE];
 };
 
+struct timing {
+  uint64_t pa_offset_bytes;
+  uint64_t pa_start_usec;
+  uint64_t recv_offset_usec;
+};
+
 struct {
   pthread_mutex_t mutex;
   enum PlayerState state;
   struct cache *cache;
   struct pulse pulse;
+  struct timing timing;
 } G = {};
 
 // prototypes
@@ -224,8 +232,11 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     .halt = false,
     .format_change = false,
     .start = 0,
+    .start_net = 0,
     .halt_index = -1,
   };
+
+  uint64_t best_net = 0;
 
   for (int index = 0; index <= cache->latest_index; index++) {
     int pos = cache_pos(cache, index);
@@ -241,8 +252,13 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     if (!frame->resent && frame->audio == frame->readptr) {
       uint64_t ts = frame->ts_due_usec - pa_bytes_to_usec(info.available, &frame->ss);
+      uint64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
+
       if (info.start == 0 || ts < info.start)
         info.start = ts;
+
+      if (info.start_net == 0 || ts_net < info.start_net)
+        info.start_net = ts_net;
     }
 
     info.available += frame->audio_length;
@@ -255,6 +271,10 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     last = frame;
   }
+
+  int64_t clock_delta = info.start - best_net;
+
+  //printf("%lu %lu, delta %li\n", info.start, best_net, clock_delta);
 
   return info;
 }
@@ -272,19 +292,16 @@ void try_prepare(void) {
   }
 
   G.state = STARTING;
+  G.timing = (struct timing){};
 
   if (G.pulse.stream == NULL) {
     pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
-    pa_usec_t buffer_length = latency_usec * 0.75;
-
-    if (buffer_length > 100e3)
-      buffer_length = 100e3;
 
     pa_buffer_attr bufattr = {
       .maxlength = -1,
       .minreq = -1,
       .prebuf = 0,
-      .tlength = pa_usec_to_bytes(buffer_length, &start->ss),
+      .tlength = pa_usec_to_bytes(latency_usec / 2, &start->ss),
     };
 
     create_stream(&G.pulse, &start->ss);
@@ -339,9 +356,22 @@ void try_start(void) {
 
   free(silence);
 
+  update_timing_stream(&G.pulse);
+
   G.state = PLAYING;
 
   pa_threaded_mainloop_unlock(G.pulse.mainloop);
+
+  const pa_timing_info* timing = pa_stream_get_timing_info(G.pulse.stream);
+
+  uint64_t ts = timing->timestamp.tv_sec * 1000000 + timing->timestamp.tv_usec;
+  uint64_t ts_first_sample = ts + timing->sink_usec +
+                             pa_bytes_to_usec(timing->write_index - timing->read_index, ss) +
+                             timing->transport_usec;
+  G.timing.pa_offset_bytes = timing->write_index;
+  G.timing.pa_start_usec = ts_first_sample;
+
+  printf("Ti r %lu w %lu %luusec %luusec \n", timing->read_index, timing->write_index, ts_first_sample, timing->transport_usec);
 
   printf("due in %liusec, seeking %li bytes\n", due, seek);
 
@@ -362,9 +392,11 @@ void play_audio(size_t writable) {
   size_t written = 0;
 
   pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(G.pulse.stream));
-  printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
-         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
-         info.available, available_usec);
+  //printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
+//         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
+//         info.available, available_usec);
+
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
 
   while (writable > 0) {
     int pos = cache_pos(G.cache, 0);
@@ -376,7 +408,7 @@ void play_audio(size_t writable) {
 
     struct audio_frame *frame = G.cache->frames[pos];
 
-    if (!pa_sample_spec_equal(pa_stream_get_sample_spec(G.pulse.stream), &frame->ss)) {
+    if (!pa_sample_spec_equal(ss, &frame->ss)) {
       printf("Sample spec mismatch.\n");
       break;
     }
@@ -384,6 +416,10 @@ void play_audio(size_t writable) {
     if (frame->halt) {
       printf("HALT received.\n");
       break;
+    }
+
+    if (G.timing.recv_offset_usec == 0) {
+      G.timing.recv_offset_usec = info.start_net;
     }
 
     bool consumed = true;
@@ -419,6 +455,23 @@ void play_audio(size_t writable) {
   //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(G.pulse.stream)));
 
   pthread_mutex_unlock(&G.mutex);
+
+  if (G.pulse.stream == NULL)
+    return;
+
+  pa_stream_update_timing_info(G.pulse.stream, NULL, NULL);
+
+  pa_usec_t pats;
+  if (pa_stream_get_time(G.pulse.stream, &pats) != -PA_ERR_NODATA) {
+  //s  printf("%lu %lu %lu\n", info.start, info.start_net, pats);
+  }
+
+  const pa_timing_info* timing = pa_stream_get_timing_info(G.pulse.stream);
+
+  uint64_t elapsed_net = (int64_t)info.start_net - G.timing.recv_offset_usec;
+  uint64_t elapsed_pa = pa_bytes_to_usec(timing->write_index - G.timing.pa_offset_bytes - written, ss);
+
+  printf("Timing s:%lu r:%lu, delta: %4li usec\n", elapsed_net, elapsed_pa, (int64_t)elapsed_net - elapsed_pa);
   return;
 }
 

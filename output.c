@@ -156,80 +156,10 @@ void stop_stream(struct pulse *pulse) {
   pulse->stream = NULL;
 }
 
-void close_stream(struct pulse *pulse) {
-
-}
-
-#if 0
-  // TODO make everything below a separate function
-
-  if (G.stream && !pa_sample_spec_equal(&G.ss, &last->ss)) {
-    // TODO this needs to drain pretty fast...
-    //      maybe drain as soon as sample_spec change is detected?
-    // will this ever happen?
-    // TODO close stream
-    assert(pa_stream_is_corked(G.stream));
-    assert(false);
-  }
-
-  pa_buffer_attr bufattr = {
-    .maxlength = pa_usec_to_bytes(latency, &last->ss),
-    .minreq = -1,
-    .prebuf = pa_usec_to_bytes(latency, &last->ss),
-    .tlength = 0.25 * pa_usec_to_bytes(latency, &last->ss),
-  };
-
-  pa_operation *o;
-
-  if (G.stream == NULL)
-    create_stream(&last->ss, &bufattr);
-  else {
-    pa_threaded_mainloop_lock(G.mainloop);
-    o = pa_stream_cork(G.stream, 1, success_cb, G.mainloop);
-    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        pa_threaded_mainloop_wait(G.mainloop);
-
-    pa_operation_unref(o);
-
-    o = pa_stream_flush(G.stream, success_cb, G.mainloop);
-    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        pa_threaded_mainloop_wait(G.mainloop);
-
-    pa_operation_unref(o);
-
-    o = pa_stream_set_buffer_attr(G.stream, &bufattr, success_cb, G.mainloop);
-    while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-        pa_threaded_mainloop_wait(G.mainloop);
-
-    pa_operation_unref(o);
-
-    printf("Bufattr set\n");
-    pa_threaded_mainloop_unlock(G.mainloop);
-  }
-
-  G.first_run = false;
-  G.state = PLAYING;
-
-  // TODO wait for success
-  // actually wait on all pa calls for success?
-  // abstract pulse into seperate file?
-  // TODO figure out where to write this in the buffer and start playback immediately?
-  // The problem is like this:
-  //   The stream is uncorked and waiting for the frame arriving after latency to trigger
-  //   play back. This frame is then lost and playback never starts, yet the software thinks it has started.
-
-  pa_threaded_mainloop_lock(G.mainloop);
-  o = pa_stream_cork(G.stream, 0, success_cb, G.mainloop);
+void update_timing_stream(struct pulse *pulse) {
+  pa_operation *o = pa_stream_update_timing_info(pulse->stream, success_cb, pulse->mainloop);
   while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-      pa_threaded_mainloop_wait(G.mainloop);
+    pa_threaded_mainloop_wait(pulse->mainloop);
 
   pa_operation_unref(o);
-
-  // alternatively, set prebuf to average processing time of frame?
-  // moving average processing time?
-
-  // TODO set buffer underrun callback. use this to set G.state = STOPPED
-  // every frame should play at receive_time + latency (-some offset...)
-
-  pa_threaded_mainloop_unlock(G.mainloop);
-#endif
+}
