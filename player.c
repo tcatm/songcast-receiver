@@ -379,7 +379,7 @@ void try_start(void) {
 
   update_timing_stream(&G.pulse);
 
-  uint64_t ts = G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
+  uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
   int64_t playback_latency = G.timing.pa->sink_usec +
                              pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index + request, ss) +
                              G.timing.pa->transport_usec;
