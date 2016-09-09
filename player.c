@@ -95,7 +95,8 @@ void print_cache(struct cache *cache) {
 
   printf("%10u [", cache->start_seqnum);
 
-  for (int index = 0; index < cache->size; index++) {
+  int end = cache->size;
+  for (int index = 0; index < end; index++) {
     int pos = cache_pos(cache, index);
 
     if (index > 0 && index%100 == 0)
@@ -206,7 +207,8 @@ struct missing_frames *request_frames(struct cache *cache) {
   struct missing_frames *d = calloc(1, sizeof(struct missing_frames) + sizeof(unsigned int) * cache->latest_index);
   assert(d != NULL);
 
-  for (int index = 0; index <= cache->latest_index; index++) {
+  int end = cache->latest_index;
+  for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
     if (G.cache->frames[pos] == NULL)
       d->seqnums[d->count++] = (long long int)index + cache->start_seqnum;
@@ -240,7 +242,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
   uint64_t best_net = 0;
 
-  for (int index = 0; index <= cache->latest_index; index++) {
+  int end = cache->latest_index;
+  for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
     if (G.cache->frames[pos] == NULL)
       break;
@@ -561,13 +564,16 @@ void remove_old_frames(struct cache *cache, uint64_t now_usec) {
 
   int discard = -1;
 
-  for (int index = 0; index <= cache->latest_index; index++) {
+  int end = cache->latest_index;
+  for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
     if (G.cache->frames[pos] == NULL)
       continue;
 
     if (G.cache->frames[pos]->ts_due_usec < now_usec)
       discard = index;
+    else
+      break;
   }
 
   discard_cache_through(cache, discard);
