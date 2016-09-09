@@ -36,9 +36,11 @@ struct cache {
 };
 
 struct timing {
+  const pa_timing_info *pa;
   uint64_t pa_offset_bytes;
-  uint64_t pa_start_usec;
-  uint64_t recv_offset_usec;
+  uint64_t start_net_usec;
+  uint64_t latency_usec;
+  int64_t net_offset;
 };
 
 struct {
@@ -251,7 +253,7 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     }
 
     if (!frame->resent && frame->audio == frame->readptr) {
-      uint64_t ts = frame->ts_due_usec - pa_bytes_to_usec(info.available, &frame->ss);
+      uint64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       uint64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
       if (info.start == 0 || ts < info.start)
@@ -294,19 +296,21 @@ void try_prepare(void) {
   G.state = STARTING;
   G.timing = (struct timing){};
 
-  if (G.pulse.stream == NULL) {
-    pa_usec_t latency_usec = latency_to_usec(start->ss.rate, start->latency);
+  G.timing.latency_usec = latency_to_usec(start->ss.rate, start->latency);
 
+  if (G.pulse.stream == NULL) {
     pa_buffer_attr bufattr = {
       .maxlength = -1,
       .minreq = -1,
       .prebuf = 0,
-      .tlength = pa_usec_to_bytes(latency_usec / 2, &start->ss),
+      .tlength = pa_usec_to_bytes(G.timing.latency_usec / 2, &start->ss),
     };
 
     create_stream(&G.pulse, &start->ss);
     connect_stream(&G.pulse, &bufattr);
   }
+
+  G.timing.pa = pa_stream_get_timing_info(G.pulse.stream);
 
 end:
   pthread_mutex_unlock(&G.mutex);
@@ -323,6 +327,11 @@ void try_start(void) {
 
   pthread_mutex_lock(&G.mutex);
   struct cache_info info = cache_continuous_size(G.cache);
+
+  // local clock + net_offset converts to remote clock
+  G.timing.net_offset = (int64_t)info.start_net - (int64_t)info.start;
+  // TODO keep net_offset updated all the time
+  printf("net offset %li usec\n", G.timing.net_offset);
 
   if (info.available == 0 && !info.halt) {
     pthread_mutex_unlock(&G.mutex);
@@ -347,31 +356,55 @@ void try_start(void) {
 
   pa_threaded_mainloop_lock(G.pulse.mainloop);
 
-  uint8_t *silence = calloc(1, request);
-  int64_t due = info.start - now_usec();
+  uint8_t *silence;
 
-  // (x > 0) - (x < 0) is the sign of x
-  ssize_t seek = ((due > 0) - (due < 0)) * pa_usec_to_bytes(llabs(due), ss) - request;
-  int r = pa_stream_write(G.pulse.stream, silence, request, NULL, seek, PA_SEEK_RELATIVE_ON_READ);
+  silence = calloc(1, request);
+  printf("1st request for %i\n", request);
 
+  pa_stream_write(G.pulse.stream, silence, request, NULL, 0, PA_SEEK_RELATIVE);
   free(silence);
+
+  while ((request = pa_stream_writable_size(G.pulse.stream)) == 0)
+    pa_threaded_mainloop_wait(G.pulse.mainloop);
+
+  silence = calloc(1, request);
+  printf("2nd request for %i\n", request);
+
+  assert(G.timing.pa->playing);
 
   update_timing_stream(&G.pulse);
 
+  uint64_t ts = G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
+  int64_t playback_latency = G.timing.pa->sink_usec +
+                             pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index + request, ss) +
+                             G.timing.pa->transport_usec;
+
+  int64_t start_at = G.timing.latency_usec;
+  if (info.start_net == 0)
+    start_at += info.start;
+  else
+    start_at += info.start_net - G.timing.net_offset;
+
+  int64_t due = start_at - (ts + playback_latency);
+
+  // (x > 0) - (x < 0) is the sign of x
+  ssize_t seek = ((due > 0) - (due < 0)) * pa_usec_to_bytes(llabs(due), ss);
+  pa_stream_write(G.pulse.stream, silence, request, NULL, seek, PA_SEEK_RELATIVE);
+  free(silence);
+
   G.state = PLAYING;
 
+  update_timing_stream(&G.pulse);
+
+  ts = G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
+  uint64_t ts_first_sample = ts + G.timing.pa->sink_usec +
+                             pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index, ss) +
+                             G.timing.pa->transport_usec;
+
+  G.timing.pa_offset_bytes = G.timing.pa->write_index;
+  G.timing.start_net_usec = ts_first_sample + G.timing.net_offset;
+
   pa_threaded_mainloop_unlock(G.pulse.mainloop);
-
-  const pa_timing_info* timing = pa_stream_get_timing_info(G.pulse.stream);
-
-  uint64_t ts = timing->timestamp.tv_sec * 1000000 + timing->timestamp.tv_usec;
-  uint64_t ts_first_sample = ts + timing->sink_usec +
-                             pa_bytes_to_usec(timing->write_index - timing->read_index, ss) +
-                             timing->transport_usec;
-  G.timing.pa_offset_bytes = timing->write_index;
-  G.timing.pa_start_usec = ts_first_sample;
-
-  printf("Ti r %lu w %lu %luusec %luusec \n", timing->read_index, timing->write_index, ts_first_sample, timing->transport_usec);
 
   printf("due in %liusec, seeking %li bytes\n", due, seek);
 
@@ -387,6 +420,10 @@ void write_data(size_t writable) {
 
 void play_audio(size_t writable) {
   pthread_mutex_lock(&G.mutex);
+
+  pa_stream_update_timing_info(G.pulse.stream, NULL, NULL);
+
+  uint64_t write_index = G.timing.pa->write_index;
 
   struct cache_info info = cache_continuous_size(G.cache);
   size_t written = 0;
@@ -416,10 +453,6 @@ void play_audio(size_t writable) {
     if (frame->halt) {
       printf("HALT received.\n");
       break;
-    }
-
-    if (G.timing.recv_offset_usec == 0) {
-      G.timing.recv_offset_usec = info.start_net;
     }
 
     bool consumed = true;
@@ -459,20 +492,10 @@ void play_audio(size_t writable) {
   if (G.pulse.stream == NULL)
     return;
 
-  pa_stream_update_timing_info(G.pulse.stream, NULL, NULL);
+  uint64_t clock_remote = info.start_net + G.timing.latency_usec;
+  uint64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
 
-  pa_usec_t pats;
-  if (pa_stream_get_time(G.pulse.stream, &pats) != -PA_ERR_NODATA) {
-  //s  printf("%lu %lu %lu\n", info.start, info.start_net, pats);
-  }
-
-  const pa_timing_info* timing = pa_stream_get_timing_info(G.pulse.stream);
-
-  uint64_t elapsed_net = (int64_t)info.start_net - G.timing.recv_offset_usec;
-  uint64_t elapsed_pa = pa_bytes_to_usec(timing->write_index - G.timing.pa_offset_bytes - written, ss);
-
-  printf("Timing s:%lu r:%lu, delta: %4li usec\n", elapsed_net, elapsed_pa, (int64_t)elapsed_net - elapsed_pa);
-  return;
+  printf("Timing r: %lu l: %lu, delta: %4li usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
 }
 
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
