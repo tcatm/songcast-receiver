@@ -256,7 +256,6 @@ struct cache_info cache_continuous_size(struct cache *cache) {
       uint64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       uint64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
-
       // TODO find a better way to calculate start_net. maybe using median?
       if (info.start == 0 || ts < info.start)
         info.start = ts;
@@ -312,6 +311,7 @@ void try_prepare(void) {
     connect_stream(&G.pulse, &bufattr);
   }
 
+  update_timing_stream(&G.pulse);
   G.timing.pa = pa_stream_get_timing_info(G.pulse.stream);
 
 end:
