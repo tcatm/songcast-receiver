@@ -256,6 +256,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
       uint64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       uint64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
+
+      // TODO find a better way to calculate start_net. maybe using median?
       if (info.start == 0 || ts < info.start)
         info.start = ts;
 
@@ -370,8 +372,6 @@ void try_start(void) {
   silence = calloc(1, request);
   printf("2nd request for %i\n", request);
 
-  assert(G.timing.pa->playing);
-
   update_timing_stream(&G.pulse);
 
   uint64_t ts = G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
@@ -392,6 +392,7 @@ void try_start(void) {
   pa_stream_write(G.pulse.stream, silence, request, NULL, seek, PA_SEEK_RELATIVE);
   free(silence);
 
+  assert(G.timing.pa->playing);
   G.state = PLAYING;
 
   update_timing_stream(&G.pulse);
