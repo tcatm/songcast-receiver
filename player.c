@@ -15,6 +15,7 @@
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 
 #define CACHE_SIZE 2000  // frames
+#define BUFFER_LATENCY 60e3 // 60ms buffer latency
 
 enum PlayerState {STOPPED, STARTING, PLAYING};
 
@@ -307,7 +308,7 @@ void try_prepare(void) {
       .maxlength = -1,
       .minreq = -1,
       .prebuf = 0,
-      .tlength = pa_usec_to_bytes(G.timing.latency_usec / 2, &start->ss),
+      .tlength = pa_usec_to_bytes(BUFFER_LATENCY, &start->ss),
     };
 
     create_stream(&G.pulse, &start->ss);
@@ -356,7 +357,8 @@ void try_start(void) {
 
   pthread_mutex_unlock(&G.mutex);
 
-  if (info.available < request || info.start == 0)
+  // Start when at least 20ms of audio is available.
+  if (available_usec < 20e3 || info.start == 0)
     return;
 
   pa_threaded_mainloop_lock(G.pulse.mainloop);
