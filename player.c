@@ -380,9 +380,8 @@ void try_start(void) {
   update_timing_stream(&G.pulse);
 
   uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
-  int64_t playback_latency = G.timing.pa->sink_usec +
-                             pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index + request, ss) +
-                             G.timing.pa->transport_usec;
+  int64_t playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
+                             pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index + request, ss);
 
   int64_t start_at = G.timing.latency_usec;
   if (info.start_net == 0)
@@ -402,13 +401,12 @@ void try_start(void) {
 
   update_timing_stream(&G.pulse);
 
-  ts = G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
-  uint64_t ts_first_sample = ts + G.timing.pa->sink_usec +
-                             pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index, ss) +
-                             G.timing.pa->transport_usec;
+  ts = (int64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
+  playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
+                     pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index, ss);
 
   G.timing.pa_offset_bytes = G.timing.pa->write_index;
-  G.timing.start_net_usec = ts_first_sample + G.timing.net_offset;
+  G.timing.start_net_usec = ts + playback_latency + G.timing.net_offset;
 
   pa_threaded_mainloop_unlock(G.pulse.mainloop);
 
