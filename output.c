@@ -4,7 +4,7 @@
 
 #include "output.h"
 
-extern void write_data(size_t size);
+extern void write_data(pa_stream *s, size_t size);
 extern void underflow(void);
 
 void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata);
@@ -34,7 +34,9 @@ void stream_underflow_cb(pa_stream *stream, void *userdata) {
 }
 
 void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
-  write_data(size);
+  pa_stream_ref(s);
+  write_data(s, size);
+  pa_stream_unref(s);
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
@@ -126,7 +128,8 @@ void output_init(struct pulse *pulse) {
 void stop_stream(struct pulse *pulse) {
   printf("Draining.\n");
 
-  assert(pulse->stream != NULL);
+  if (pulse->stream == NULL)
+    return;
 
   pa_operation *o = pa_stream_drain(pulse->stream, NULL, NULL);
   if (o != NULL)

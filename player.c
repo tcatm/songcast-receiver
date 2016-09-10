@@ -25,8 +25,10 @@ struct cache_info {
   int64_t start;
   int64_t start_net;
   int halt_index;
+  int format_change_index;
   bool halt;
   bool format_change;
+  pa_usec_t latency_usec;
 };
 
 struct cache {
@@ -58,7 +60,7 @@ bool process_frame(struct audio_frame *frame);
 bool same_format(struct audio_frame *a, struct audio_frame *b);
 void free_frame(struct audio_frame *frame);
 void remove_old_frames(struct cache *cache, uint64_t now_usec);
-void play_audio(size_t writable, struct cache_info *info);
+void play_audio(pa_stream *s, size_t writable, struct cache_info *info);
 struct cache_info cache_continuous_size(struct cache *cache);
 void discard_cache_through(struct cache *cache, int discard);
 
@@ -95,6 +97,7 @@ void print_cache(struct cache *cache) {
 
   printf("%10u [", cache->start_seqnum);
 
+  struct audio_frame *last = NULL;
   int end = cache->size;
   for (int index = 0; index < end; index++) {
     int pos = cache_pos(cache, index);
@@ -112,6 +115,11 @@ void print_cache(struct cache *cache) {
       else                c = '#';
     }
 
+    if (last != NULL && frame != NULL && !same_format(last, frame))
+      fg = 2;
+
+    last = frame;
+
     if (fg != -1) {
       printf("\e[3%1im%c\e[m", fg, c);
     } else
@@ -126,8 +134,8 @@ void print_cache(struct cache *cache) {
 void stop_playback(void) {
   print_state(G.state);
 
-  G.state = STOPPED;
   stop_stream(&G.pulse);
+  G.state = STOPPED;
   printf("Playback stopped.\n");
 }
 
@@ -243,6 +251,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     .start = 0,
     .start_net = 0,
     .halt_index = -1,
+    .format_change_index = -1,
+    .latency_usec = 0,
   };
 
   uint64_t best_net = 0;
@@ -265,6 +275,7 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     struct audio_frame *frame = G.cache->frames[pos];
 
     if (last != NULL && !same_format(last, frame)) {
+      info.format_change_index = index;
       info.format_change = true;
       break;
     }
@@ -291,6 +302,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
       j++;
     }
+
+    info.latency_usec = latency_to_usec(frame->ss.rate, frame->latency);
 
     info.available += frame->audio_length;
 
@@ -377,14 +390,11 @@ void try_prepare(void) {
 
   printf("Preparing stream.\n");
 
-  if (G.pulse.stream && !pa_sample_spec_equal(pa_stream_get_sample_spec(G.pulse.stream), &start->ss)) {
-    stop_stream(&G.pulse);
-  }
+  assert(G.pulse.stream == NULL);
+  assert(G.state == STOPPED);
 
   G.state = STARTING;
   G.timing = (struct timing){};
-
-  G.timing.latency_usec = latency_to_usec(start->ss.rate, start->latency);
 
   if (G.pulse.stream == NULL) {
     pa_buffer_attr bufattr = {
@@ -402,7 +412,7 @@ void try_prepare(void) {
   print_state(G.state);
 }
 
-void write_data(size_t request) {
+void write_data(pa_stream *s, size_t request) {
   pthread_mutex_lock(&G.mutex);
 
   if (G.state == STOPPED) {
@@ -410,10 +420,10 @@ void write_data(size_t request) {
     return;
   }
 
-  const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
   if (G.timing.pa == NULL)
-    G.timing.pa = pa_stream_get_timing_info(G.pulse.stream);
+    G.timing.pa = pa_stream_get_timing_info(s);
 
   struct cache_info info = cache_continuous_size(G.cache);
 
@@ -433,8 +443,10 @@ void write_data(size_t request) {
       if (info.start_net == 0 && info.start == 0)
         goto silence;
 
+      pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(s));
+
       // Determine whether we have enough data to start playing right away.
-      int64_t start_at = G.timing.latency_usec;
+      int64_t start_at = info.latency_usec;
 
       if (info.start_net == 0)
         start_at += info.start;
@@ -484,14 +496,14 @@ void write_data(size_t request) {
       break;
   }
 
-  play_audio(request, &info);
+  play_audio(s, request, &info);
   pthread_mutex_unlock(&G.mutex);
   return;
 
 silence:
   printf("Playing silence.\n");
   uint8_t *silence = calloc(1, request);
-  pa_stream_write(G.pulse.stream, silence, request, NULL, 0, PA_SEEK_RELATIVE);
+  pa_stream_write(s, silence, request, NULL, 0, PA_SEEK_RELATIVE);
   free(silence);
 
   pthread_mutex_unlock(&G.mutex);
@@ -501,20 +513,20 @@ void underflow(void) {
   stop_playback();
 }
 
-void play_audio(size_t writable, struct cache_info *info) {
-  const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
+void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
   uint64_t write_index = G.timing.pa->write_index;
-  uint64_t clock_remote = info->start_net + G.timing.latency_usec;
+  uint64_t clock_remote = info->start_net + info->latency_usec;
   uint64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
 
   printf("Timing r: %lu l: %lu, delta: %4li usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
 
   size_t written = 0;
 
-  pa_usec_t available_usec = pa_bytes_to_usec(info->available, pa_stream_get_sample_spec(G.pulse.stream));
+  pa_usec_t available_usec = pa_bytes_to_usec(info->available, pa_stream_get_sample_spec(s));
   //printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
-//         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
+//         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(s)),
 //         info.available, available_usec);
 
   while (writable > 0) {
@@ -548,7 +560,7 @@ void play_audio(size_t writable, struct cache_info *info) {
       frame->audio_length -= length;
     }
 
-    int r = pa_stream_write(G.pulse.stream, data, length, NULL, 0LL, PA_SEEK_RELATIVE);
+    int r = pa_stream_write(s, data, length, NULL, 0LL, PA_SEEK_RELATIVE);
 
     written += length;
     writable -= length;
@@ -567,7 +579,7 @@ void play_audio(size_t writable, struct cache_info *info) {
     stop_playback();
   }
 
-  //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(G.pulse.stream)));
+  //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(s)));
 }
 
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
@@ -591,12 +603,11 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   if (!consumed)
     free_frame(aframe);
 
-
   if (G.cache != NULL && G.state == STOPPED) {
-      print_cache(G.cache);
-      try_prepare();
-    //  try_start();
+    print_cache(G.cache);
+    try_prepare();
   }
+
   pthread_mutex_unlock(&G.mutex);
 
   // Don't send resend requests when the frame was an answer.
@@ -670,7 +681,7 @@ bool process_frame(struct audio_frame *frame) {
   if (index < 0 || index >= G.cache->size)
     return false;
 
-  //printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
+//  printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
 
   if (G.cache->frames[pos] != NULL)
     return false;

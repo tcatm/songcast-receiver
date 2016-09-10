@@ -11,6 +11,7 @@
 - [X] build code for managing missed frames. sorted list of integers?
 - [X] port to async API
 - [X] PA_STREAM_ADJUST_LATENCY
+- [ ] clearly mark data that is accessed from the playback thread (e.g. separate struct)
 - [ ] can CACHE_SIZE be reduced?
 - [ ] track timestamp of oldest element in cache
 - [ ] use monotonic clock
