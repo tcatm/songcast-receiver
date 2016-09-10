@@ -520,7 +520,7 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   uint64_t clock_remote = info->start_net + info->latency_usec;
   uint64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
 
-  printf("Timing r: %lu l: %lu, delta: %4li usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
+  printf("Timing r: %" PRIu64 " l: %" PRIu64 ", delta: %4" PRId64 " usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
 
   size_t written = 0;
 
