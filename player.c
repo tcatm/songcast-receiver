@@ -227,6 +227,11 @@ bool same_format(struct audio_frame *a, struct audio_frame *b) {
   return pa_sample_spec_equal(&a->ss, &b->ss) && a->latency == b->latency;
 }
 
+int uint64cmp(const void *aa, const void *bb) {
+  const uint64_t *a = aa, *b = bb;
+  return (*a < *b) ? -1 : (*a > *b);
+}
+
 struct cache_info cache_continuous_size(struct cache *cache) {
   assert(cache != NULL);
 
@@ -244,6 +249,10 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   uint64_t best_net = 0;
 
   int end = cache->latest_index;
+
+  uint64_t tss[end];
+  uint64_t ts_nets[end];
+
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
     if (G.cache->frames[pos] == NULL)
@@ -259,6 +268,10 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     if (!frame->resent && frame->audio == frame->readptr) {
       uint64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       uint64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
+      printf("%li %li\n", ts, ts_net);
+
+      tss[index] = ts;
+      ts_nets[index] = ts_net;
 
       // TODO find a better way to calculate start_net. maybe using median?
       if (info.start == 0 || ts < info.start)
@@ -279,9 +292,13 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     last = frame;
   }
 
-  int64_t clock_delta = info.start - best_net;
+  qsort(tss, end, sizeof(uint64_t), uint64cmp);
+  qsort(ts_nets, end, sizeof(uint64_t), uint64cmp);
 
-  //printf("%lu %lu, delta %li\n", info.start, best_net, clock_delta);
+  printf("meddelta %lu %lu\n", tss[end/2] - info.start, ts_nets[end/2] - info.start_net);
+
+  info.start = tss[end/2];
+  info.start_net = ts_nets[end/2];
 
   return info;
 }
