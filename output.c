@@ -5,6 +5,7 @@
 #include "output.h"
 
 extern void write_data(size_t size);
+extern void underflow(void);
 
 void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata);
 
@@ -28,11 +29,12 @@ void success_cb(pa_stream *s, int success, void *mainloop) {
 
 void stream_underflow_cb(pa_stream *stream, void *userdata) {
   printf("Underflow\n");
+  underflow();
 //  assert(false);
 }
 
 void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
-//  printf("Request for %i\n", size);
+  printf("Request for %i\n", size);
   write_data(size);
   pa_threaded_mainloop_signal(mainloop, 0);
 }

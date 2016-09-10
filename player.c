@@ -402,7 +402,7 @@ void try_prepare(void) {
   print_state(G.state);
 }
 
-void write_data_with_timing(pa_stream *s, int success, void *null) {
+void write_data(size_t request) {
   pthread_mutex_lock(&G.mutex);
 
   if (G.state == STOPPED) {
@@ -411,10 +411,9 @@ void write_data_with_timing(pa_stream *s, int success, void *null) {
   }
 
   const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
-  size_t request = pa_stream_writable_size(s);
 
   if (G.timing.pa == NULL)
-    G.timing.pa = pa_stream_get_timing_info(s);
+    G.timing.pa = pa_stream_get_timing_info(G.pulse.stream);
 
   struct cache_info info = cache_continuous_size(G.cache);
 
@@ -424,6 +423,9 @@ void write_data_with_timing(pa_stream *s, int success, void *null) {
     case PLAYING:
       break;
     case STARTING:
+      if (G.timing.pa == NULL)
+        goto silence;
+
       if (G.timing.pa->playing == 0)
         goto silence;
 
@@ -489,25 +491,14 @@ void write_data_with_timing(pa_stream *s, int success, void *null) {
 silence:
   printf("Playing silence.\n");
   uint8_t *silence = calloc(1, request);
-  pa_stream_write(s, silence, request, NULL, 0, PA_SEEK_RELATIVE);
+  pa_stream_write(G.pulse.stream, silence, request, NULL, 0, PA_SEEK_RELATIVE);
   free(silence);
 
   pthread_mutex_unlock(&G.mutex);
 }
 
-void write_data(size_t writable) {
-  pthread_mutex_lock(&G.mutex);
-
-  if (G.state != STOPPED) {
-    pa_operation *o = pa_stream_update_timing_info(G.pulse.stream, write_data_with_timing, NULL);
-
-    if (o)
-      pa_operation_unref(o);
-    else
-      stop_playback();
-  }
-
-  pthread_mutex_unlock(&G.mutex);
+void underflow(void) {
+  stop_playback();
 }
 
 void play_audio(size_t writable, struct cache_info *info) {
