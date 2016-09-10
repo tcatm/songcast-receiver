@@ -7,8 +7,6 @@
 extern void write_data(pa_stream *s, size_t size);
 extern void underflow(void);
 
-void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata);
-
 pa_usec_t latency_to_usec(int samplerate, uint64_t latency) {
   int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
   return latency * 1000000 / (256 * multiplier);
@@ -68,33 +66,6 @@ void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
   assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, NULL, NULL) == 0);
 }
 
-void trigger_stream(struct pulse *pulse, pa_usec_t delay) {
-  pa_usec_t when = pa_rtclock_now() + delay;
-  printf(" at %uusec\n", when);
-
-  pa_context_rttime_new(pulse->context, when, stream_trigger_cb, pulse);
-}
-
-void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata) {
-  struct pulse *pulse = userdata;
-
-  assert(pulse->stream != NULL);
-
-  printf("now %uusec\n", pa_rtclock_now());
-
-  pa_operation *o;
-
-  assert(pa_stream_is_corked(pulse->stream));
-
-  o = pa_stream_cork(pulse->stream, 0, success_cb, pulse->mainloop);
-  if (o != NULL)
-    pa_operation_unref(o);
-
-  o = pa_stream_trigger(pulse->stream, success_cb, pulse->mainloop);
-  if (o != NULL)
-    pa_operation_unref(o);
-}
-
 void output_init(struct pulse *pulse) {
   pulse->mainloop = pa_threaded_mainloop_new();
   pulse->context = pa_context_new(pa_threaded_mainloop_get_api(pulse->mainloop), "Songcast Receiver");
@@ -141,12 +112,4 @@ void stop_stream(struct pulse *pulse) {
 
   pa_stream_unref(pulse->stream);
   pulse->stream = NULL;
-}
-
-void update_timing_stream(struct pulse *pulse) {
-  pa_operation *o = pa_stream_update_timing_info(pulse->stream, success_cb, pulse->mainloop);
-  while (pa_operation_get_state(o) == PA_OPERATION_RUNNING)
-    pa_threaded_mainloop_wait(pulse->mainloop);
-
-  pa_operation_unref(o);
 }
