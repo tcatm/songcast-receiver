@@ -507,9 +507,11 @@ void set_stopped(void) {
   printf("Playback stopped.\n");
 }
 
-void underflow(pa_stream *s) {
-  printf("Underflow: ");
+void stop(pa_stream *s) {
+  printf("Stop: ");
   print_state(G.state);
+
+  G.state = STOPPING;
   stop_stream(s, set_stopped);
 }
 
@@ -572,7 +574,7 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
       if (halt) {
         printf("HALT received.\n");
         G.state = STOPPING;
-        break;
+        return;
       }
     }
   }
@@ -580,6 +582,7 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   if (writable > 0) {
     printf("Not enough data. Stopping.\n");
     G.state = STOPPING;
+    return;
   }
 
   //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(s)));

@@ -5,7 +5,7 @@
 #include "output.h"
 
 extern void write_data(pa_stream *s, size_t size);
-extern void underflow(pa_stream *s);
+extern void stop(pa_stream *s);
 
 pa_usec_t latency_to_usec(int samplerate, uint64_t latency) {
   int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
@@ -21,10 +21,10 @@ void stream_state_cb(pa_stream *s, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void stream_underflow_cb(pa_stream *s, void *userdata) {
+void stream_underflow_cb(pa_stream *s, void *mainloop) {
   printf("Underflow\n");
-  underflow(s);
-//  assert(false);
+  pa_threaded_mainloop_signal(mainloop, 0);
+  stop(s);
 }
 
 void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
@@ -41,7 +41,7 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
   pa_stream *s = pa_stream_new(pulse->context, "Songcast Receiver", ss, &map);
   pa_stream_set_state_callback(s, stream_state_cb, pulse->mainloop);
   pa_stream_set_write_callback(s, stream_request_cb, pulse->mainloop);
-  pa_stream_set_underflow_callback(s, stream_underflow_cb, NULL);
+  pa_stream_set_underflow_callback(s, stream_underflow_cb, pulse->mainloop);
 
   char format[PA_SAMPLE_SPEC_SNPRINT_MAX];
   pa_sample_spec_snprint(format, sizeof(format), ss);
