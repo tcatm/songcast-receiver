@@ -60,7 +60,6 @@ void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
   pa_stream_flags_t stream_flags;
   stream_flags =  PA_STREAM_NOT_MONOTONIC |
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
-                  // | PA_STREAM_VARIABLE_RATE;
 
   // Connect stream to the default audio output sink
   assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, NULL, NULL) == 0);
