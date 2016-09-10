@@ -275,7 +275,9 @@ struct cache_info cache_continuous_size(struct cache *cache) {
       break;
     }
 
-    if (!frame->resent && frame->audio == frame->readptr) {
+    info.available += frame->audio_length;
+
+    if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0) {
       int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       int64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
@@ -299,8 +301,6 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     }
 
     info.latency_usec = latency_to_usec(frame->ss.rate, frame->latency);
-
-    info.available += frame->audio_length;
 
     if (frame->halt) {
       info.halt_index = index;
