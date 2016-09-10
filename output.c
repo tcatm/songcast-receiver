@@ -56,8 +56,6 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss) {
 void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
   assert(pulse->stream != NULL);
 
-  pa_threaded_mainloop_lock(pulse->mainloop);
-
   pa_stream_flags_t stream_flags;
   stream_flags =  PA_STREAM_NOT_MONOTONIC |
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
@@ -65,20 +63,6 @@ void connect_stream(struct pulse *pulse, const pa_buffer_attr *bufattr) {
 
   // Connect stream to the default audio output sink
   assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, NULL, NULL) == 0);
-
-  printf("Connect\n");
-  // Wait for the stream to be ready
-  while (true) {
-      pa_stream_state_t stream_state = pa_stream_get_state(pulse->stream);
-      assert(PA_STREAM_IS_GOOD(stream_state));
-      if (stream_state == PA_STREAM_READY)
-        break;
-      pa_threaded_mainloop_wait(pulse->mainloop);
-  }
-
-  printf("Connected\n");
-
-  pa_threaded_mainloop_unlock(pulse->mainloop);
 }
 
 void trigger_stream(struct pulse *pulse, pa_usec_t delay) {
@@ -149,8 +133,7 @@ void stop_stream(struct pulse *pulse) {
 
   printf("Drain complete\n");
 
-
-  assert(pa_stream_disconnect(pulse->stream) == 0);
+  pa_stream_disconnect(pulse->stream);
 
   pa_stream_unref(pulse->stream);
   pulse->stream = NULL;

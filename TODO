@@ -21,6 +21,7 @@
 - [ ] init/destroy for player.c (also to handle null uri)
 - [ ] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [ ] synchronize playback by tweaking the samplerate a little (less then 0.1%)
+- [ ] resampling should be optional
 - [ ] send join until track and metatext is received. adhere to flow diagram
 - [ ] check whether destination multicast group matches
 - [ ] display codec name

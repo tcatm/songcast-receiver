@@ -22,8 +22,8 @@ enum PlayerState {STOPPED, STARTING, PLAYING};
 
 struct cache_info {
   size_t available;
-  uint64_t start;
-  uint64_t start_net;
+  int64_t start;
+  int64_t start_net;
   int halt_index;
   bool halt;
   bool format_change;
@@ -39,9 +39,9 @@ struct cache {
 
 struct timing {
   const pa_timing_info *pa;
-  uint64_t pa_offset_bytes;
-  uint64_t start_net_usec;
-  uint64_t latency_usec;
+  int64_t pa_offset_bytes;
+  int64_t start_net_usec;
+  int64_t latency_usec;
   int64_t net_offset;
 };
 
@@ -58,7 +58,7 @@ bool process_frame(struct audio_frame *frame);
 bool same_format(struct audio_frame *a, struct audio_frame *b);
 void free_frame(struct audio_frame *frame);
 void remove_old_frames(struct cache *cache, uint64_t now_usec);
-void play_audio(size_t writable);
+void play_audio(size_t writable, struct cache_info *info);
 struct cache_info cache_continuous_size(struct cache *cache);
 void discard_cache_through(struct cache *cache, int discard);
 
@@ -91,8 +91,6 @@ void print_state(enum PlayerState state) {
 }
 
 void print_cache(struct cache *cache) {
-  pthread_mutex_lock(&G.mutex);
-
   assert(cache != NULL);
 
   printf("%10u [", cache->start_seqnum);
@@ -123,7 +121,6 @@ void print_cache(struct cache *cache) {
   struct cache_info info = cache_continuous_size(G.cache);
 
   printf("] (%i byte)\n", info.available);
-  pthread_mutex_unlock(&G.mutex);
 }
 
 void stop_playback(void) {
@@ -131,6 +128,7 @@ void stop_playback(void) {
 
   G.state = STOPPED;
   stop_stream(&G.pulse);
+  printf("Playback stopped.\n");
 }
 
 void player_init(void) {
@@ -257,6 +255,7 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   int64_t ts_net_mean = 0;
   int64_t ts_m2 = 0;
   int64_t ts_net_m2 = 0;
+  int j = 0;
 
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
@@ -274,28 +273,23 @@ struct cache_info cache_continuous_size(struct cache *cache) {
       int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       int64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
-      tss[index] = ts;
-      ts_nets[index] = ts_net;
+      tss[j] = ts;
+      ts_nets[j] = ts_net;
 
-      if (index > 0) {
+      if (j > 0) {
         int64_t d = ts - ts_mean;
-        ts_mean += d / index;
+        ts_mean += d / j;
         ts_m2 += d * (ts - ts_mean);
 
         d = ts_net - ts_net_mean;
-        ts_net_mean += d / index;
+        ts_net_mean += d / j;
         ts_net_m2 += d * (ts_net - ts_net_mean);
       } else {
         ts_mean = ts;
         ts_net_mean = ts_net;
       }
 
-      // TODO find a better way to calculate start_net. maybe using median?
-      if (info.start == 0 || ts < info.start)
-        info.start = ts;
-
-      if (info.start_net == 0 || ts_net < info.start_net)
-        info.start_net = ts_net;
+      j++;
     }
 
     info.available += frame->audio_length;
@@ -309,28 +303,79 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     last = frame;
   }
 
-  qsort(tss, end, sizeof(uint64_t), uint64cmp);
-  qsort(ts_nets, end, sizeof(uint64_t), uint64cmp);
+  if (j == 0)
+    return info;
 
-  int64_t ts_var = end > 1 ? ts_m2 / (end - 1) : 0;
-  int64_t ts_net_var = end > 1 ? ts_net_m2 / (end - 1) : 0;
+  qsort(tss, j, sizeof(uint64_t), uint64cmp);
+  qsort(ts_nets, j, sizeof(uint64_t), uint64cmp);
 
-  printf("ts     mean %lu median %lu std %g\n", ts_mean, tss[end/2], sqrt(ts_var));
-  printf("ts_net mean %lu median %lu std %g\n", ts_net_mean, ts_nets[end/2], sqrt(ts_net_var));
+  int64_t ts_var = j > 1 ? ts_m2 / (j - 1) : 0;
+  int64_t ts_net_var = j > 1 ? ts_net_m2 / (j - 1) : 0;
 
-  info.start = tss[end/2] - sqrt(ts_var);
-  info.start_net = ts_nets[end/2] - sqrt(ts_net_var);
+  //printf("ts     mean %lu median %lu std %g\n", ts_mean, tss[j/2], sqrt(ts_var));
+  //printf("ts_net mean %lu median %lu std %g\n", ts_net_mean, ts_nets[j/2], sqrt(ts_net_var));
+
+  info.start = tss[j/2] - sqrt(ts_var);
+  info.start_net = ts_nets[j/2] - sqrt(ts_net_var);
 
   return info;
 }
 
-void try_prepare(void) {
-  pthread_mutex_lock(&G.mutex);
+// Remove trim amount of bytes from the start of the cache.
+// Returns true on success; false if there is not enough data to trim.
+static bool trim_cache(struct cache *cache, size_t trim) {
+  if (trim == 0)
+    return true;
 
+  int end = cache->latest_index;
+  int adjust = 0;
+  for (int index = 0; index <= end && trim > 0; index++) {
+    int pos = cache_pos(cache, index);
+    struct audio_frame *frame = G.cache->frames[pos];
+
+    printf("Trimming %zd bytes\n", trim);
+
+    if (frame == NULL)
+      break;
+
+    printf("%i Frame length %zd\n", index, frame->audio_length);
+
+    if (frame->audio_length < trim) {
+      printf("Trimming whole frame.\n");
+      trim -= frame->audio_length;
+      free_frame(frame);
+      G.cache->frames[pos] = NULL;
+      adjust++;
+    } else {
+      printf("Cutting frame.\n");
+      frame->readptr = (uint8_t*)frame->readptr + trim;
+      frame->audio_length -= trim;
+      trim = 0;
+    }
+  }
+
+  G.cache->offset += adjust;
+  G.cache->start_seqnum += adjust;
+  G.cache->latest_index -= adjust;
+
+  assert(trim == 0);
+
+  if (trim != 0)
+    return false;
+
+  return true;
+  // iterate over frames
+  // free any fully used frames
+  // cut next frame in half if neccessary
+}
+
+void try_prepare(void) {
   struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
 
   if (start == NULL)
-    goto end;
+    return;
+
+  printf("Preparing stream.\n");
 
   if (G.pulse.stream && !pa_sample_spec_equal(pa_stream_get_sample_spec(G.pulse.stream), &start->ss)) {
     stop_stream(&G.pulse);
@@ -353,129 +398,133 @@ void try_prepare(void) {
     connect_stream(&G.pulse, &bufattr);
   }
 
-  update_timing_stream(&G.pulse);
-  G.timing.pa = pa_stream_get_timing_info(G.pulse.stream);
-
-end:
-  pthread_mutex_unlock(&G.mutex);
+  printf("Stream prepared: ");
+  print_state(G.state);
 }
 
-void try_start(void) {
-  if (!G.pulse.stream) {
-    printf("No stream?!\n");
+void write_data_with_timing(pa_stream *s, int success, void *null) {
+  pthread_mutex_lock(&G.mutex);
+
+  if (G.state == STOPPED) {
+    pthread_mutex_unlock(&G.mutex);
     return;
   }
 
   const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
-  size_t request = pa_stream_writable_size(G.pulse.stream);
+  size_t request = pa_stream_writable_size(s);
 
-  pthread_mutex_lock(&G.mutex);
+  if (G.timing.pa == NULL)
+    G.timing.pa = pa_stream_get_timing_info(s);
+
   struct cache_info info = cache_continuous_size(G.cache);
 
-  // local clock + net_offset converts to remote clock
   G.timing.net_offset = (int64_t)info.start_net - (int64_t)info.start;
-  // TODO keep net_offset updated all the time
-  printf("net offset %li usec\n", G.timing.net_offset);
 
-  if (info.available == 0 && !info.halt) {
-    pthread_mutex_unlock(&G.mutex);
-    return;
+  switch (G.state) {
+    case PLAYING:
+      break;
+    case STARTING:
+      if (G.timing.pa->playing == 0)
+        goto silence;
+
+      // Can't start playing when we don't have a timestamp
+      if (info.start_net == 0 && info.start == 0)
+        goto silence;
+
+      // Determine whether we have enough data to start playing right away.
+      int64_t start_at = G.timing.latency_usec;
+
+      if (info.start_net == 0)
+        start_at += info.start;
+      else
+        start_at += info.start_net - G.timing.net_offset;
+
+      uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
+      uint64_t playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
+                                  pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index - request, ss);
+
+      uint64_t play_at = ts + playback_latency;
+
+      int64_t delta = play_at - start_at;
+
+      printf("Request for %u bytes (playing = %i), can start at %ld, would play at %ld, in %ld usec\n", request, G.timing.pa->playing, start_at, play_at, delta);
+
+      if (delta < 0)
+        goto silence;
+
+      size_t skip = pa_usec_to_bytes(delta, ss);
+
+      printf("Need to skip %zd bytes, have %zd bytes\n", skip, info.available);
+
+      if (info.available < request + skip) {
+        printf("Not enough data in buffer to start (missing %zd bytes)\n", request - skip - info.available);
+        goto silence;
+      }
+
+      printf("Request can be fullfilled.\n");
+
+      trim_cache(G.cache, skip);
+
+      // Adjust cache info
+      info.start += delta;
+      info.start_net += delta;
+      info.available -= skip;
+
+      // Prepare timing information
+      G.timing.pa_offset_bytes = G.timing.pa->write_index;
+      G.timing.start_net_usec = play_at + G.timing.net_offset;
+
+      G.state = PLAYING;
+      break;
+    default:
+      pthread_mutex_unlock(&G.mutex);
+      return;
+      break;
   }
 
-  pa_usec_t available_usec = pa_bytes_to_usec(info.available, ss);
+  play_audio(request, &info);
+  pthread_mutex_unlock(&G.mutex);
+  return;
 
-  // Don't start if there is less than 5 seconds of audio to play before
-  // encountering the next halt frame.
-  if (info.halt && available_usec < 5e6) {
-    printf("halt index %i\n", info.halt_index);
-    discard_cache_through(G.cache, info.halt_index);
-    pthread_mutex_unlock(&G.mutex);
-    return;
-  }
+silence:
+  printf("Playing silence.\n");
+  uint8_t *silence = calloc(1, request);
+  pa_stream_write(s, silence, request, NULL, 0, PA_SEEK_RELATIVE);
+  free(silence);
 
   pthread_mutex_unlock(&G.mutex);
-
-  // Start when at least 20ms of audio is available.
-  if (available_usec < 20e3 || info.start == 0)
-    return;
-
-  pa_threaded_mainloop_lock(G.pulse.mainloop);
-
-  uint8_t *silence;
-
-  silence = calloc(1, request);
-  printf("1st request for %i\n", request);
-
-  pa_stream_write(G.pulse.stream, silence, request, NULL, 0, PA_SEEK_RELATIVE);
-  free(silence);
-
-  while ((request = pa_stream_writable_size(G.pulse.stream)) == 0)
-    pa_threaded_mainloop_wait(G.pulse.mainloop);
-
-  silence = calloc(1, request);
-  printf("2nd request for %i\n", request);
-
-  update_timing_stream(&G.pulse);
-
-  uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
-  int64_t playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
-                             pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index + request, ss);
-
-  int64_t start_at = G.timing.latency_usec;
-  if (info.start_net == 0)
-    start_at += info.start;
-  else
-    start_at += info.start_net - G.timing.net_offset;
-
-  int64_t due = start_at - (ts + playback_latency);
-
-  // (x > 0) - (x < 0) is the sign of x
-  ssize_t seek = ((due > 0) - (due < 0)) * pa_usec_to_bytes(llabs(due), ss);
-  pa_stream_write(G.pulse.stream, silence, request, NULL, seek, PA_SEEK_RELATIVE);
-  free(silence);
-
-  assert(G.timing.pa->playing);
-  G.state = PLAYING;
-
-  update_timing_stream(&G.pulse);
-
-  ts = (int64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
-  playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
-                     pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index, ss);
-
-  G.timing.pa_offset_bytes = G.timing.pa->write_index;
-  G.timing.start_net_usec = ts + playback_latency + G.timing.net_offset;
-
-  pa_threaded_mainloop_unlock(G.pulse.mainloop);
-
-  printf("due in %liusec, seeking %li bytes\n", due, seek);
-
-  printf("try_start finished.\n");
 }
 
 void write_data(size_t writable) {
-  if (G.state != PLAYING)
-    return;
-
-  play_audio(writable);
-}
-
-void play_audio(size_t writable) {
   pthread_mutex_lock(&G.mutex);
 
-  pa_stream_update_timing_info(G.pulse.stream, NULL, NULL);
+  if (G.state != STOPPED) {
+    pa_operation *o = pa_stream_update_timing_info(G.pulse.stream, write_data_with_timing, NULL);
+
+    if (o)
+      pa_operation_unref(o);
+    else
+      stop_playback();
+  }
+
+  pthread_mutex_unlock(&G.mutex);
+}
+
+void play_audio(size_t writable, struct cache_info *info) {
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
 
   uint64_t write_index = G.timing.pa->write_index;
+  uint64_t clock_remote = info->start_net + G.timing.latency_usec;
+  uint64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
 
-  struct cache_info info = cache_continuous_size(G.cache);
+  printf("Timing r: %lu l: %lu, delta: %4li usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
+
   size_t written = 0;
 
-  pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(G.pulse.stream));
+  pa_usec_t available_usec = pa_bytes_to_usec(info->available, pa_stream_get_sample_spec(G.pulse.stream));
   //printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
 //         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(G.pulse.stream)),
 //         info.available, available_usec);
-
-  const pa_sample_spec *ss = pa_stream_get_sample_spec(G.pulse.stream);
 
   while (writable > 0) {
     int pos = cache_pos(G.cache, 0);
@@ -528,16 +577,6 @@ void play_audio(size_t writable) {
   }
 
   //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(G.pulse.stream)));
-
-  pthread_mutex_unlock(&G.mutex);
-
-  if (G.pulse.stream == NULL)
-    return;
-
-  uint64_t clock_remote = info.start_net + G.timing.latency_usec;
-  uint64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
-
-  printf("Timing r: %lu l: %lu, delta: %4li usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
 }
 
 struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
@@ -561,13 +600,13 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
   if (!consumed)
     free_frame(aframe);
 
-  pthread_mutex_unlock(&G.mutex);
 
-  if (G.cache != NULL && G.state != PLAYING) {
+  if (G.cache != NULL && G.state == STOPPED) {
       print_cache(G.cache);
       try_prepare();
-      try_start();
+    //  try_start();
   }
+  pthread_mutex_unlock(&G.mutex);
 
   // Don't send resend requests when the frame was an answer.
   if (!aframe->resent && G.cache != NULL)
