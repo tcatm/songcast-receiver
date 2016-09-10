@@ -18,7 +18,7 @@
 #define CACHE_SIZE 2000  // frames
 #define BUFFER_LATENCY 60e3 // 60ms buffer latency
 
-enum PlayerState {STOPPED, STARTING, PLAYING};
+enum PlayerState {STOPPED, STARTING, PLAYING, STOPPING};
 
 struct cache_info {
   size_t available;
@@ -87,6 +87,9 @@ void print_state(enum PlayerState state) {
     case PLAYING:
       puts("PLAYING");
       break;
+    case STOPPING:
+      puts("STOPPING");
+      break;
     default:
       assert(false && "UNKNOWN STATE");
   }
@@ -129,14 +132,6 @@ void print_cache(struct cache *cache) {
   struct cache_info info = cache_continuous_size(G.cache);
 
   printf("] (%i byte)\n", info.available);
-}
-
-void stop_playback(void) {
-  print_state(G.state);
-
-  stop_stream(&G.pulse);
-  G.state = STOPPED;
-  printf("Playback stopped.\n");
 }
 
 void player_init(void) {
@@ -325,8 +320,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   int64_t ts_var = j > 1 ? ts_m2 / (j - 1) : 0;
   int64_t ts_net_var = j > 1 ? ts_net_m2 / (j - 1) : 0;
 
-  //printf("ts     mean %lu median %lu std %g\n", ts_mean, tss[j/2], sqrt(ts_var));
-  //printf("ts_net mean %lu median %lu std %g\n", ts_net_mean, ts_nets[j/2], sqrt(ts_net_var));
+//  printf("ts     mean %lu median %lu std %g\n", ts_mean, tss[j/2], sqrt(ts_var));
+//  printf("ts_net mean %lu median %lu std %g\n", ts_net_mean, ts_nets[j/2], sqrt(ts_net_var));
 
   info.start = tss[j/2] - sqrt(ts_var);
   info.start_net = ts_nets[j/2] - sqrt(ts_net_var);
@@ -390,23 +385,19 @@ void try_prepare(void) {
 
   printf("Preparing stream.\n");
 
-  assert(G.pulse.stream == NULL);
   assert(G.state == STOPPED);
 
   G.state = STARTING;
   G.timing = (struct timing){};
 
-  if (G.pulse.stream == NULL) {
-    pa_buffer_attr bufattr = {
-      .maxlength = -1,
-      .minreq = -1,
-      .prebuf = 0,
-      .tlength = pa_usec_to_bytes(BUFFER_LATENCY, &start->ss),
-    };
+  pa_buffer_attr bufattr = {
+    .maxlength = -1,
+    .minreq = -1,
+    .prebuf = 0,
+    .tlength = pa_usec_to_bytes(BUFFER_LATENCY, &start->ss),
+  };
 
-    create_stream(&G.pulse, &start->ss);
-    connect_stream(&G.pulse, &bufattr);
-  }
+  create_stream(&G.pulse, &start->ss, &bufattr);
 
   printf("Stream prepared: ");
   print_state(G.state);
@@ -490,6 +481,8 @@ void write_data(pa_stream *s, size_t request) {
 
       G.state = PLAYING;
       break;
+    case STOPPED:
+    case STOPPING:
     default:
       pthread_mutex_unlock(&G.mutex);
       return;
@@ -509,8 +502,15 @@ silence:
   pthread_mutex_unlock(&G.mutex);
 }
 
-void underflow(void) {
-  stop_playback();
+void set_stopped(void) {
+  G.state = STOPPED;
+  printf("Playback stopped.\n");
+}
+
+void underflow(pa_stream *s) {
+  printf("Underflow: ");
+  print_state(G.state);
+  stop_stream(s, set_stopped);
 }
 
 void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
@@ -544,11 +544,6 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
       break;
     }
 
-    if (frame->halt) {
-      printf("HALT received.\n");
-      break;
-    }
-
     bool consumed = true;
     void *data = frame->readptr;
     size_t length = frame->audio_length;
@@ -566,17 +561,25 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
     writable -= length;
 
     if (consumed) {
+      bool halt = frame->halt;
+
       free_frame(frame);
       G.cache->frames[pos] = NULL;
       G.cache->offset++;
       G.cache->start_seqnum++;
       G.cache->latest_index--;
+
+      if (halt) {
+        printf("HALT received.\n");
+        G.state = STOPPING;
+        break;
+      }
     }
   }
 
   if (writable > 0) {
     printf("Not enough data. Stopping.\n");
-    stop_playback();
+    G.state = STOPPING;
   }
 
   //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(s)));
