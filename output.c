@@ -34,7 +34,6 @@ void stream_underflow_cb(pa_stream *stream, void *userdata) {
 }
 
 void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
-  printf("Request for %i\n", size);
   write_data(size);
   pa_threaded_mainloop_signal(mainloop, 0);
 }
