@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <time.h>
 #include <pthread.h>
+#include <math.h>
 
 #include "player.h"
 #include "output.h"
@@ -252,6 +253,10 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
   uint64_t tss[end];
   uint64_t ts_nets[end];
+  int64_t ts_mean = 0;
+  int64_t ts_net_mean = 0;
+  int64_t ts_m2 = 0;
+  int64_t ts_net_m2 = 0;
 
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
@@ -266,12 +271,24 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     }
 
     if (!frame->resent && frame->audio == frame->readptr) {
-      uint64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
-      uint64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
-      printf("%li %li\n", ts, ts_net);
+      int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
+      int64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
       tss[index] = ts;
       ts_nets[index] = ts_net;
+
+      if (index > 0) {
+        int64_t d = ts - ts_mean;
+        ts_mean += d / index;
+        ts_m2 += d * (ts - ts_mean);
+
+        d = ts_net - ts_net_mean;
+        ts_net_mean += d / index;
+        ts_net_m2 += d * (ts_net - ts_net_mean);
+      } else {
+        ts_mean = ts;
+        ts_net_mean = ts_net;
+      }
 
       // TODO find a better way to calculate start_net. maybe using median?
       if (info.start == 0 || ts < info.start)
@@ -295,10 +312,14 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   qsort(tss, end, sizeof(uint64_t), uint64cmp);
   qsort(ts_nets, end, sizeof(uint64_t), uint64cmp);
 
-  printf("meddelta %lu %lu\n", tss[end/2] - info.start, ts_nets[end/2] - info.start_net);
+  int64_t ts_var = end > 1 ? ts_m2 / (end - 1) : 0;
+  int64_t ts_net_var = end > 1 ? ts_net_m2 / (end - 1) : 0;
 
-  info.start = tss[end/2];
-  info.start_net = ts_nets[end/2];
+  printf("ts     mean %lu median %lu std %g\n", ts_mean, tss[end/2], sqrt(ts_var));
+  printf("ts_net mean %lu median %lu std %g\n", ts_net_mean, ts_nets[end/2], sqrt(ts_net_var));
+
+  info.start = tss[end/2] - sqrt(ts_var);
+  info.start_net = ts_nets[end/2] - sqrt(ts_net_var);
 
   return info;
 }
