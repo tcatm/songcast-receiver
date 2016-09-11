@@ -129,9 +129,7 @@ void print_cache(struct cache *cache) {
       printf("%c", c);
   }
 
-  struct cache_info info = cache_continuous_size(G.cache);
-
-  printf("] (%i byte)\n", info.available);
+  printf("]\n");
 }
 
 void player_init(void) {
