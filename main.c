@@ -21,31 +21,10 @@
 #include "player.h"
 
 void open_uri(char *uri_string);
+int open_ohz_socket(void);
 
 char *resolve_preset(int preset) {
-  int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-
-  if (fd <= 0)
-    error(1, errno, "Could not open socket");
-
-  struct sockaddr_in src = {
-    .sin_family = AF_INET,
-    .sin_port = htons(51972),
-    .sin_addr.s_addr = htonl(INADDR_ANY),
-  };
-
-  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0)
-    error(1, 0, "setsockopt(SO_REUSEADDR) failed");
-
-  if (bind(fd, (struct sockaddr *) &src, sizeof(src)) < 0)
-    error(1, 0, "Could not bind socket");
-
-  struct ip_mreq mreq = {
-    mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250")
-  };
-
-  if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
-    error(1, 0, "Could not join multicast group");
+  int fd = open_ohz_socket();
 
   struct sockaddr_in dst = {
     .sin_family = AF_INET,
@@ -180,8 +159,7 @@ void free_uri(struct uri *uri) {
   free(uri);
 }
 
-void resolve_ohz(struct uri *uri) {
-  printf("Resolving OHZ\n");
+int open_ohz_socket(void) {
   int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
   if (fd <= 0)
@@ -206,10 +184,14 @@ void resolve_ohz(struct uri *uri) {
   if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
     error(1, 0, "Could not join multicast group");
 
+  return fd;
+}
+
+void send_zone_query(int fd, const char *host, unsigned int port, const char *zone) {
   struct sockaddr_in dst = {
     .sin_family = AF_INET,
-    .sin_port = htons(uri->port),
-    .sin_addr.s_addr = inet_addr(uri->host)
+    .sin_port = htons(port),
+    .sin_addr.s_addr = inet_addr(host)
   };
 
   ohz1_zone_query query = {
@@ -217,12 +199,12 @@ void resolve_ohz(struct uri *uri) {
       .signature = "Ohz ",
       .version = 1,
       .type = OHZ1_ZONE_QUERY,
-      .length = htons(sizeof(ohz1_preset_query))
+      .length = htons(sizeof(ohz1_zone_query))
     },
-    .zone_length = htonl(strlen(uri->path))
+    .zone_length = htonl(strlen(zone))
   };
 
-  size_t query_size = sizeof(ohz1_zone_query) + strlen(uri->path);
+  size_t query_size = sizeof(ohz1_zone_query) + strlen(zone);
   uint8_t *query_with_id = malloc(query_size);
 
   struct iovec iov[] = {
@@ -231,8 +213,8 @@ void resolve_ohz(struct uri *uri) {
       .iov_len = sizeof(query)
     },
     {
-      .iov_base = uri->path,
-      .iov_len = strlen(uri->path)
+      .iov_base = (char *)zone,
+      .iov_len = strlen(zone)
     }
   };
 
@@ -243,65 +225,103 @@ void resolve_ohz(struct uri *uri) {
     .msg_iovlen = 2
   };
 
+  if (sendmsg(fd, &message, 0) == -1)
+    error(1, errno, "sendmsg failed");
+}
+
+char *handle_ohz(int fd, const char *zone) {
+  uint8_t buf[4096];
+
+  ssize_t n = recv(fd, buf, sizeof(buf), 0);
+
+  if (n < 0) {
+    if (errno == EAGAIN)
+      return NULL;
+
+    error(1, errno, "recv");
+  }
+
+  if (n < sizeof(ohz1_zone_uri))
+    return NULL;
+
+  ohz1_zone_uri *info = (void *)buf;
+
+  if (strncmp(info->hdr.signature, "Ohz ", 4) != 0)
+    return NULL;
+
+  if (info->hdr.version != 1)
+    return NULL;
+
+  if (info->hdr.type != OHZ1_ZONE_URI)
+    return NULL;
+
+  size_t zone_length = htonl(info->zone_length);
+  size_t uri_length = htonl(info->uri_length);
+
+  if (strlen(zone) != zone_length || strncmp(zone, info->data, zone_length) != 0)
+    return NULL;
+
+  return strndup(info->data + zone_length, uri_length);
+}
+
+int open_ohm_socket(const char *host, unsigned int port, bool unicast) {
+  int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+  if (fd <= 0)
+    error(1, errno, "Could not open socket");
+
+  if (!unicast) {
+    // Join multicast group
+    struct sockaddr_in src = {
+      .sin_family = AF_INET,
+      .sin_port = htons(port),
+      .sin_addr.s_addr = inet_addr(host)
+    };
+
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0)
+      error(1, 0, "setsockopt(SO_REUSEADDR) failed");
+
+    if (bind(fd, (struct sockaddr *) &src, sizeof(src)) < 0)
+      error(1, 0, "Could not bind socket");
+
+    struct ip_mreq mreq = {
+      mreq.imr_multiaddr.s_addr = inet_addr(host)
+    };
+
+    if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
+      error(1, 0, "Could not join multicast group");
+  }
+
+  if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &(int){ 1 }, sizeof(int)) < 0)
+    error(1, errno, "setsockopt(SO_TIMESTAMP) failed");
+
+  return fd;
+}
+
+char *resolve_ohz(struct uri *uri) {
+  printf("Resolving OHZ\n");
+
+  int fd = open_ohz_socket();
+
+  struct timeval timeout = {
+    .tv_usec = 100000
+  };
+
+  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
+    error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
+
   char *zone_uri = NULL;
 
   while (1) {
-    if (sendmsg(fd, &message, 0) == -1)
-    error(1, errno, "sendmsg failed");
+    send_zone_query(fd, uri->host, uri->port, uri->path);
 
-    uint8_t buf[4096];
-
-    struct timeval timeout = {
-      .tv_usec = 100000
-    };
-
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
-      error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
-
-    while (1) {
-      ssize_t n = recv(fd, buf, sizeof(buf), 0);
-
-      if (n < 0) {
-        if (errno == EAGAIN)
-          break;
-
-        error(1, errno, "recv");
-      }
-
-      if (n < sizeof(ohz1_zone_uri))
-        continue;
-
-      ohz1_zone_uri *info = (void *)buf;
-
-      if (strncmp(info->hdr.signature, "Ohz ", 4) != 0)
-        continue;
-
-      if (info->hdr.version != 1)
-        continue;
-
-      if (info->hdr.type != OHZ1_ZONE_URI)
-        continue;
-
-      size_t zone_length = htonl(info->zone_length);
-      size_t uri_length = htonl(info->uri_length);
-
-      if (strlen(uri->path) != zone_length || strncmp(uri->path, info->data, zone_length) != 0)
-        continue;
-
-      zone_uri = strndup(info->data + zone_length, uri_length);
-
-      break;
-    }
+    zone_uri = handle_ohz(fd, uri->path);
 
     if (zone_uri != NULL)
       break;
   }
 
-  open_uri(zone_uri);
-
-  free(zone_uri);
-
-  // de-dup socket code with presety_y_ foo
+  return zone_uri;
 }
 
 void ohm_send_event(int fd, const struct uri *uri, int event) {
@@ -358,54 +378,30 @@ void dump_metatext(ohm1_metatext *meta) {
   printf("Metatext: %.*s\n", htonl(meta->length), meta->data);
 }
 
-size_t slave_count;
-struct sockaddr_in *my_slaves;
-
-void update_slaves(ohm1_slave *slave) {
+int update_slaves(struct sockaddr_in *my_slaves[], ohm1_slave *slave) {
   free(my_slaves);
-  slave_count = htonl(slave->count);
+  int slave_count = htonl(slave->count);
   printf("Updating slaves: %zi\n", slave_count);
 
   my_slaves = calloc(slave_count, sizeof(struct sockaddr_in));
 
   for (size_t i = 0; i < slave_count; i++) {
-    my_slaves[i] = (struct sockaddr_in) {
+    *my_slaves[i] = (struct sockaddr_in) {
       .sin_family = AF_INET,
       .sin_port = slave->slaves[i].port,
       .sin_addr.s_addr = slave->slaves[i].addr
     };
   }
+
+  return slave_count;
 }
 
 void play_uri(struct uri *uri) {
   bool unicast = strncmp(uri->scheme, "ohu", 3) == 0;
+  int slave_count = 0;
+  struct sockaddr_in *my_slaves;
 
-  int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-
-  if (fd <= 0)
-    error(1, errno, "Could not open socket");
-
-  if (!unicast) {
-    // Join multicast group
-    struct sockaddr_in src = {
-      .sin_family = AF_INET,
-      .sin_port = htons(uri->port),
-      .sin_addr.s_addr = inet_addr(uri->host)
-    };
-
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0)
-      error(1, 0, "setsockopt(SO_REUSEADDR) failed");
-
-    if (bind(fd, (struct sockaddr *) &src, sizeof(src)) < 0)
-      error(1, 0, "Could not bind socket");
-
-    struct ip_mreq mreq = {
-      mreq.imr_multiaddr.s_addr = inet_addr(uri->host)
-    };
-
-    if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
-      error(1, 0, "Could not join multicast group");
-  }
+  int fd = open_ohm_socket(uri->host, uri->port, unicast);
 
   uint8_t buf[8192];
 
@@ -416,13 +412,10 @@ void play_uri(struct uri *uri) {
   if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
     error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
 
-  if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMP, &(int){ 1 }, sizeof(int)) < 0)
-    error(1, errno, "setsockopt(SO_TIMESTAMP) failed");
+  struct timespec last_listen;
 
   ohm_send_event(fd, uri, OHM1_JOIN);
   ohm_send_event(fd, uri, OHM1_LISTEN);
-
-  struct timespec last_listen;
   clock_gettime(CLOCK_MONOTONIC, &last_listen);
 
   struct missing_frames *missing;
@@ -433,8 +426,8 @@ void play_uri(struct uri *uri) {
 
     now.tv_nsec -= 750000000; // send listen every 750ms
     if (timespec_cmp(now, last_listen) > 0) {
-      // TODO do not repeat join. Instead detect when we're not receving data anymore
-      //ohm_send_event(fd, uri, OHM1_JOIN);
+      // TODO resend join if no audio for a few seconds
+      //      can this be implemented using the ohz state machine?
       ohm_send_event(fd, uri, OHM1_LISTEN);
       clock_gettime(CLOCK_MONOTONIC, &last_listen);
     }
@@ -512,10 +505,6 @@ void play_uri(struct uri *uri) {
         }
 
         switch (hdr->type) {
-          case OHM1_LEAVE:
-          case OHM1_JOIN:
-            // ignore join and leave
-            break;
           case OHM1_LISTEN:
             if (!unicast)
               clock_gettime(CLOCK_MONOTONIC, &last_listen);
@@ -535,9 +524,12 @@ void play_uri(struct uri *uri) {
             dump_metatext((void *)buf);
             break;
           case OHM1_SLAVE:
-            update_slaves((void *)buf);
+            slave_count = update_slaves(&my_slaves, (void *)buf);
             break;
           case OHM1_RESEND_REQUEST:
+          case OHM1_LEAVE:
+          case OHM1_JOIN:
+            // not used by receivers
             break;
           default:
             printf("Type %i not handled yet\n", hdr->type);
@@ -550,9 +542,13 @@ void play_uri(struct uri *uri) {
 
     struct uri *uri = parse_uri(uri_string);
 
-    if (strcmp(uri->scheme, "ohz") == 0)
-      resolve_ohz(uri);
-    else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0)
+    if (strcmp(uri->scheme, "ohz") == 0) {
+      // TODO open OHZ socket and continue to listen for zone messages
+      // TODO switch play_uri whenever the URI changes
+      char *uri2 = resolve_ohz(uri);
+      open_uri(uri2);
+      free(uri2);
+    } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0)
       play_uri(uri);
     else
       error(1, 0, "unknown URI scheme \"%s\"", uri->scheme);
@@ -583,8 +579,6 @@ void play_uri(struct uri *uri) {
 
     if (preset != 0)
       uri = resolve_preset(preset);
-
-    my_slaves = NULL;
 
     player_init();
 

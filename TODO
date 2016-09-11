@@ -14,6 +14,9 @@
 - [X] build code for managing missed frames. sorted list of integers?
 - [X] port to async API
 - [X] PA_STREAM_ADJUST_LATENCY
+- [ ] merge preset and ohz resolve code. add a statemachine. have preset, want ohz, have ohz, want ohm...
+- [ ] handle 100ms timeouts for preset/ohz query
+- [ ] closing ohm needs to: stop the player, close ohm socket
 - [ ] if ohz: continually listen for matching zone uri messages and switch if changed
 - [ ] actually close sockets! (ohz)
 - [ ] ohm send event could share code with ohm_send_resend_request
