@@ -7,11 +7,6 @@
 extern void write_data(pa_stream *s, size_t size);
 extern void stop(pa_stream *s);
 
-pa_usec_t latency_to_usec(int samplerate, uint64_t latency) {
-  int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
-  return latency * 1000000 / (256 * multiplier);
-}
-
 void context_state_cb(pa_context* context, void* mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }

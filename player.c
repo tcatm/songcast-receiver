@@ -72,6 +72,11 @@ uint64_t now_usec(void) {
   return (long long)now.tv_sec * 1000000 + (now.tv_nsec + 500) / 1000;
 }
 
+uint64_t latency_to_usec(int samplerate, uint64_t latency) {
+  int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
+  return latency * 1000000 / (256 * multiplier);
+}
+
 int cache_pos(struct cache *cache, int index) {
   return (index + cache->offset) % cache->size;
 }
