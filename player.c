@@ -518,11 +518,15 @@ void stop(pa_stream *s) {
 void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
-  uint64_t write_index = G.timing.pa->write_index;
-  uint64_t clock_remote = info->start_net + info->latency_usec;
-  uint64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
+  size_t write_index = G.timing.pa->write_index;
+  int frame_size = pa_frame_size(ss);
+  int64_t clock_remote = info->start_net + info->latency_usec;
+  int64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
+  int clock_delta = clock_local - clock_remote;
+  int clock_delta_sgn = ((clock_delta > 0) - (0 > clock_delta));
+  int frames_delta = clock_delta_sgn * ((pa_usec_to_bytes(abs(clock_delta), ss) + frame_size / 2) / frame_size);
 
-  printf("Timing r: %" PRIu64 " l: %" PRIu64 ", delta: %4" PRId64 " usec\n", clock_remote, clock_local, (int64_t)clock_local - clock_remote);
+  printf("Timing r: %" PRId64 " l: %" PRId64 ", delta: %4d usec (%3d frames)\n", clock_remote, clock_local, clock_delta, frames_delta);
 
   size_t written = 0;
 
