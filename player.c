@@ -183,8 +183,8 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
     return NULL;
   }
 
-  aframe->ts_network = latency_to_usec(aframe->ss.rate, ntohl(frame->network_timestamp));
-  aframe->ts_media = latency_to_usec(aframe->ss.rate, ntohl(frame->media_timestamp));
+  aframe->ts_network = ntohl(frame->network_timestamp);
+  aframe->ts_media = ntohl(frame->media_timestamp);
 
   aframe->audio = malloc(aframe->audio_length);
   aframe->readptr = aframe->audio;
@@ -202,6 +202,27 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
 void free_frame(struct audio_frame *frame) {
   free(frame->audio);
   free(frame);
+}
+
+void fixup_timestamps(struct cache *cache) {
+  int end = cache->latest_index;
+  uint64_t last_ts_network = 0, last_ts_media = 0;
+
+  for (int index = 0; index <= end; index++) {
+    int pos = cache_pos(cache, index);
+    struct audio_frame *frame = G.cache->frames[pos];
+    if (frame == NULL)
+      break;
+
+    if (frame->ts_network < last_ts_network)
+      frame->ts_network += 1ULL<<32;
+
+    if (frame->ts_media < last_ts_media)
+      frame->ts_media += 1ULL<<32;
+
+    last_ts_network = frame->ts_network;
+    last_ts_media = frame->ts_media;
+  }
 }
 
 struct missing_frames *request_frames(struct cache *cache) {
@@ -279,10 +300,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0) {
       int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
-      int64_t ts_net = frame->ts_network - pa_bytes_to_usec(info.available, &frame->ss);
 
-      tss[j] = ts;
-      ts_nets[j] = ts_net;
+      int64_t ts_net = latency_to_usec(frame->ss.rate, frame->ts_network) - pa_bytes_to_usec(info.available, &frame->ss);
 
       if (j > 0) {
         int64_t d = ts - ts_mean;
@@ -314,17 +333,11 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   if (j == 0)
     return info;
 
-  qsort(tss, j, sizeof(uint64_t), uint64cmp);
-  qsort(ts_nets, j, sizeof(uint64_t), uint64cmp);
-
   int64_t ts_var = j > 1 ? ts_m2 / (j - 1) : 0;
   int64_t ts_net_var = j > 1 ? ts_net_m2 / (j - 1) : 0;
 
-//  printf("ts     mean %lu median %lu std %g\n", ts_mean, tss[j/2], sqrt(ts_var));
-//  printf("ts_net mean %lu median %lu std %g\n", ts_net_mean, ts_nets[j/2], sqrt(ts_net_var));
-
-  info.start = tss[j/2] - sqrt(ts_var);
-  info.start_net = ts_nets[j/2] - sqrt(ts_net_var);
+  info.start = ts_mean - sqrt(ts_var);
+  info.start_net = ts_net_mean - sqrt(ts_net_var);
 
   return info;
 }
@@ -612,6 +625,8 @@ struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts) {
 
   if (!consumed)
     free_frame(aframe);
+
+  fixup_timestamps(G.cache);
 
   if (G.cache != NULL && G.state == STOPPED) {
     print_cache(G.cache);
