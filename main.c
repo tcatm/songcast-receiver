@@ -423,8 +423,6 @@ void play_uri(struct uri *uri) {
   struct timespec last_listen;
   clock_gettime(CLOCK_MONOTONIC, &last_listen);
 
-  player_init();
-
   struct missing_frames *missing;
 
   while (1) {
@@ -585,6 +583,8 @@ void play_uri(struct uri *uri) {
       uri = resolve_preset(preset);
 
     my_slaves = NULL;
+
+    player_init();
 
     open_uri(uri);
 
