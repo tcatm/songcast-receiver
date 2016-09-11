@@ -130,6 +130,8 @@ char *resolve_preset(int preset) {
   xmlFree(uri);
   xmlCleanupParser();
 
+  close(fd);
+
   return s;
 }
 
