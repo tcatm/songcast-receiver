@@ -22,7 +22,73 @@
 #include "ohm_v1.h"
 #include "player.h"
 
-enum ReceiverState {IDLE, RESOLVING_PRESET, RESOLVING_OHZ, CONNECTED};
+/*
+  States:
+    IDLE
+      In this state only the OHZ socket is connected.
+      The player is inactive and no stream is played.
+      The receiver is waiting for a command on stdin
+      to either resolve a preset or play an URI.
+
+      Enter
+        -
+
+      Leave
+        -
+    RESOLVING_PRESET
+      In this state the receiver is trying to resolve
+      a preset number to an URI. It will continuously
+      send requests every 100ms until a response matching
+      the preset number is received.
+
+      When a response is received and the URI is an OHZ URI
+      the state is changed to WATCHING_ZONE.
+
+      If the response contains and OHM/OHU URI the state
+      is changed to PLAYING_OHM.
+
+      Enter
+        The preset number is set when entering the state.
+        The 100ms timer is started.
+
+      Leave
+        The 100ms timer is stopped.
+
+    RESOLVING_ZONE
+      In this state the receiver is resolving a zone.
+      When a response is received, the state is changed to
+      WATCHING_ZONE and the URI is played.
+
+      The URI must be a OHM/OHU URI.
+
+      If no response is received within 100ms, the request
+      is sent again.
+
+      Enter
+        The zone id is set when entering the state.
+        The 100ms timer is started.
+
+      Leave
+        The 100ms timer is stopped.
+
+    WATCHING_ZONE
+      In this state the receiver is watching a zone.
+      If a new URI is received, the player URI is changed.
+
+      Enter
+        The zone id is set when entering the state.
+
+      Leave
+        The player is stopped.
+
+
+  Commands
+    preset <number>
+    uri <uri>
+    stop
+*/
+
+enum ReceiverState {IDLE, RESOLVING_PRESET, RESOLVING_ZONE, WATCHING_ZONE};
 
 void receiver(const char *uri_string, unsigned int preset);
 int open_ohz_socket(void);
@@ -158,7 +224,7 @@ void send_preset_query(int fd, unsigned int preset) {
       .type = OHZ1_PRESET_QUERY,
       .length = htons(sizeof(ohz1_preset_query))
     },
-    .preset = preset,
+    .preset = htonl(preset),
   };
 
   struct iovec iov[] = {
@@ -386,6 +452,9 @@ int update_slaves(struct sockaddr_in *my_slaves[], ohm1_slave *slave) {
 }
 
 void play_uri(struct uri *uri) {
+  printf("Playing %s://%s:%d/%p", uri->scheme, uri->host, uri->port, uri->path);
+
+  // TODO check if URI is null URI and stop playback
   bool unicast = strncmp(uri->scheme, "ohu", 3) == 0;
   int slave_count = 0;
   struct sockaddr_in *my_slaves;
@@ -561,7 +630,6 @@ void receiver(const char *uri_string, unsigned int preset) {
   if (preset != 0)
     state = RESOLVING_PRESET;
 
-  while (1) {
     switch (state) {
       case IDLE:
         break;
@@ -571,6 +639,7 @@ void receiver(const char *uri_string, unsigned int preset) {
         break;
     }
 
+  while (1) {
 		int n = epoll_wait(efd, events, maxevents, 100);
 
     if (n < 0)
