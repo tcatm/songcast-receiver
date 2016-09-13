@@ -22,6 +22,8 @@
 #include "ohm_v1.h"
 #include "player.h"
 
+#define OHM_NULL_URI "ohm://0.0.0.0:0"
+
 /*
   States:
     IDLE
@@ -35,6 +37,7 @@
 
       Leave
         -
+
     RESOLVING_PRESET
       In this state the receiver is trying to resolve
       a preset number to an URI. It will continuously
@@ -88,7 +91,14 @@
     stop
 */
 
-enum ReceiverState {IDLE, RESOLVING_PRESET, RESOLVING_ZONE, WATCHING_ZONE};
+enum ReceiverState {INVALID, IDLE, RESOLVING_PRESET, RESOLVING_ZONE, WATCHING_ZONE};
+
+struct ReceiverData {
+  enum ReceiverState state;
+  enum ReceiverState next_state;
+  unsigned int preset;
+  char *zone_id;
+};
 
 void receiver(const char *uri_string, unsigned int preset);
 int open_ohz_socket(void);
@@ -176,6 +186,13 @@ void free_uri(struct uri *uri) {
   free(uri->host);
   free(uri->path);
   free(uri);
+}
+
+bool is_ohm_null_uri(struct uri *uri) {
+  if (strcmp(uri->host, "0.0.0.0") == 0 && uri->port == 0)
+    return true;
+
+  return false;
 }
 
 int open_ohz_socket(void) {
@@ -288,6 +305,9 @@ void send_zone_query(int fd, const char *host, unsigned int port, const char *zo
 }
 
 char *handle_zone_uri(ohz1_zone_uri *info, const char *zone) {
+  if (zone == NULL)
+    return NULL;
+
   size_t zone_length = htonl(info->zone_length);
   size_t uri_length = htonl(info->uri_length);
 
@@ -309,7 +329,6 @@ char *handle_ohz(int fd, const char *zone, unsigned int preset) {
   // we are waiting for a preset or an URI.
   // Actually, it can only ever return an URI.
   uint8_t buf[4096];
-  printf("ohz\n");
 
   ssize_t n = recv(fd, buf, sizeof(buf), 0);
 
@@ -604,8 +623,50 @@ void handle_stdin(int fd) {
   printf("got: %s\n", s);
 }
 
+bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
+  if (preset == 0)
+    return false;
+
+  receiver->next_state = RESOLVING_PRESET;
+  receiver->preset = preset;
+}
+
+void goto_uri(struct ReceiverData *receiver, char *uri_string) {
+  printf("goto_uri %s\n", uri_string);
+
+  struct uri *uri = parse_uri(uri_string);
+
+  receiver->next_state = IDLE;
+
+  if (strcmp(uri->scheme, "ohz") == 0) {
+    printf("Got zone %s\n", uri->path);
+    receiver->zone_id = uri->path;
+    receiver->next_state = RESOLVING_ZONE;
+  } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0) {
+    if (receiver->state == RESOLVING_ZONE)
+      receiver->next_state = WATCHING_ZONE;
+
+    // TODO stop player, reset track and metadata
+    // TODO change player URI
+    if (is_ohm_null_uri(uri)) {
+      printf("Got null URI\n");
+
+    } else {
+      //play_uri(uri);
+    }
+  } else
+    fprintf(stderr, "unknown URI scheme \"%s\"", uri->scheme);
+
+  free_uri(uri);
+}
+
 void receiver(const char *uri_string, unsigned int preset) {
-  enum ReceiverState state = IDLE;
+  struct ReceiverData receiver = {
+    .state = IDLE,
+    .next_state = INVALID,
+    .preset = 0,
+    .zone_id = NULL,
+  };
 
   int efd;
   int maxevents = 64;
@@ -622,24 +683,30 @@ void receiver(const char *uri_string, unsigned int preset) {
 
   char *zone = "";
 
-  /*
-    I could have: preset, ohz uri, ohm uri, zone
-    preset [retry] -> (ohz uri [retry] -> zone) -> ohm uri -> play
-  */
-
   if (preset != 0)
-    state = RESOLVING_PRESET;
+    goto_preset(&receiver, preset);
 
-    switch (state) {
-      case IDLE:
-        break;
-      case RESOLVING_PRESET:
-        send_preset_query(ohz_fd, preset);
-      default:
-        break;
-    }
+  if (uri_string != NULL)
+    goto_uri(&receiver, uri_string);
 
   while (1) {
+    // TODO handle any state work here
+    // check if next_state is not INVALID, then we have a state change
+    // exit existing state
+    // enter new state
+    // this needs to reset preset/zone?2
+    // needs some kind of pointer to the current state...
+    // for handling state specific fds
+    // timer is really only about sending a packet. request or listen...
+    // stuff pointer to some functions in event.data.ptr?
+    // call handle from that struct?
+
+    // There will be two timers
+    //  - request retry timer
+    //  - listen timer
+    // Can we share the same timer?
+    // states create their own timerfd
+
 		int n = epoll_wait(efd, events, maxevents, 100);
 
     if (n < 0)
@@ -652,24 +719,13 @@ void receiver(const char *uri_string, unsigned int preset) {
         handle_stdin(events[i].data.fd);
       } else if (events[i].data.fd == ohz_fd) {
         char *uri = handle_ohz(events[i].data.fd, zone, preset);
+        if (uri != NULL) {
+          goto_uri(&receiver, uri);
+          free(uri_string);
+        }
       }
     }
   }
-/*
-  printf("Attemping to open %s\n", uri_string);
-
-  struct uri *uri = parse_uri(uri_string);
-
-  if (strcmp(uri->scheme, "ohz") == 0) {
-    // TODO open OHZ socket and continue to listen for zone messages
-    // TODO switch play_uri whenever the URI changes
-  } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0)
-    play_uri(uri);
-  else
-    error(1, 0, "unknown URI scheme \"%s\"", uri->scheme);
-
-    free_uri(uri);
-    */
 }
 
 int main(int argc, char *argv[]) {
