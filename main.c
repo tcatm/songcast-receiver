@@ -100,6 +100,11 @@ struct ReceiverData {
   char *zone_id;
 };
 
+struct handler {
+  void (*f)(void *userdata);
+  void *userdata;
+};
+
 void receiver(const char *uri_string, unsigned int preset);
 int open_ohz_socket(void);
 
@@ -643,7 +648,7 @@ void goto_uri(struct ReceiverData *receiver, char *uri_string) {
     receiver->zone_id = uri->path;
     receiver->next_state = RESOLVING_ZONE;
   } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0) {
-    if (receiver->state == RESOLVING_ZONE)
+    if (receiver->zone_id != NULL)
       receiver->next_state = WATCHING_ZONE;
 
     // TODO stop player, reset track and metadata
@@ -700,6 +705,7 @@ void receiver(const char *uri_string, unsigned int preset) {
     // timer is really only about sending a packet. request or listen...
     // stuff pointer to some functions in event.data.ptr?
     // call handle from that struct?
+    // stdin is handled outside of the state machine
 
     // There will be two timers
     //  - request retry timer
