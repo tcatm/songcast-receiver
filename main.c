@@ -101,21 +101,28 @@ struct ReceiverData {
 };
 
 struct handler {
-  void (*f)(void *userdata);
+  int fd;
+  void (*func)(int fd, uint32_t events, void *userdata);
   void *userdata;
 };
 
 void receiver(const char *uri_string, unsigned int preset);
 int open_ohz_socket(void);
 
-void add_fd(int efd, int fd, uint32_t events) {
+void add_fd(int efd, struct handler *handler, uint32_t events) {
 	struct epoll_event event = {};
-	event.data.fd = fd;
+	event.data.ptr = handler;
 	event.events = events;
 
-  fcntl(fd, F_SETFL, O_NONBLOCK);
+  fcntl(handler->fd, F_SETFL, O_NONBLOCK);
 
-	int s = epoll_ctl(efd, EPOLL_CTL_ADD, fd, &event);
+	int s = epoll_ctl(efd, EPOLL_CTL_ADD, handler->fd, &event);
+	if (s == -1)
+		error(1, errno, "epoll_ctl");
+}
+
+void del_fd(int efd, struct handler *handler) {
+	int s = epoll_ctl(efd, EPOLL_CTL_ADD, handler->fd, NULL);
 	if (s == -1)
 		error(1, errno, "epoll_ctl");
 }
@@ -619,7 +626,7 @@ void play_uri(struct uri *uri) {
   }
 }
 
-void handle_stdin(int fd) {
+void handle_stdin(int fd, uint32_t events, void *userdata) {
   char buf[256];
   char *s = fgets(buf, sizeof(buf), stdin);
   if (s == NULL)
@@ -681,10 +688,16 @@ void receiver(const char *uri_string, unsigned int preset) {
   if (efd == -1)
     error(1, errno, "epoll_create");
 
-  add_fd(efd, STDIN_FILENO, EPOLLIN);
+  struct handler stdin_handler = {
+    .fd = STDIN_FILENO,
+    .func = handle_stdin,
+    .userdata = NULL,
+  };
 
-  int ohz_fd = open_ohz_socket();
-  add_fd(efd, ohz_fd, EPOLLIN);
+  add_fd(efd, &stdin_handler, EPOLLIN);
+
+  //int ohz_fd = open_ohz_socket();
+  //add_fd(efd, ohz_fd, EPOLLIN);
 
   char *zone = "";
 
@@ -719,8 +732,14 @@ void receiver(const char *uri_string, unsigned int preset) {
       error(1, errno, "epoll_wait");
 
     for(int i = 0; i < n; i++) {
-      if ((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP)) {
+      if ((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP))
         error(1, 0, "epoll error\n");
+
+      struct handler *handler = events[i].data.ptr;
+      handler->func(handler->fd, events[i].events, handler->userdata);
+    }
+    /*
+
       } else if (events[i].data.fd == STDIN_FILENO) {
         handle_stdin(events[i].data.fd);
       } else if (events[i].data.fd == ohz_fd) {
@@ -730,7 +749,7 @@ void receiver(const char *uri_string, unsigned int preset) {
           free(uri_string);
         }
       }
-    }
+      */
   }
 }
 
