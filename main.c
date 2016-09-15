@@ -421,7 +421,6 @@ void stop_playback(struct ReceiverData *receiver) {
 }
 
 void play_uri(struct ReceiverData *receiver) {
-  // TODO merge with mainloop
   printf("Playing %s://%s:%d/%s\n", receiver->uri->scheme, receiver->uri->host, receiver->uri->port, receiver->uri->path);
 
   assert(!is_ohm_null_uri(receiver->uri));
@@ -466,7 +465,6 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
     .msg_controllen = sizeof(ctrl)
   };
 
-  // TODO determine whether to send listen here
   ssize_t n = recvmsg(fd, &msg, 0);
 
   struct timespec ts_recv;
@@ -502,7 +500,7 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
     return;
 
   // Forwarding
-  // TODO move forwarding to separate functin
+  // TODO move forwarding to separate function
   if (receiver->slave_count > 0)
     switch (hdr->type) {
       case OHM1_AUDIO:

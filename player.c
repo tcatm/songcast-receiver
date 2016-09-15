@@ -545,7 +545,7 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   int clock_delta_sgn = ((clock_delta > 0) - (0 > clock_delta));
   int frames_delta = clock_delta_sgn * ((pa_usec_to_bytes(abs(clock_delta), ss) + frame_size / 2) / frame_size);
 
-  printf("Timing r: %" PRId64 " l: %" PRId64 ", delta: %4d usec (%3d frames)\n", clock_remote, clock_local, clock_delta, frames_delta);
+  printf("Timing delta: %4d usec (%3d frames)\n", clock_delta, frames_delta);
 
   size_t written = 0;
 

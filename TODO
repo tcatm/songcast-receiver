@@ -24,7 +24,9 @@
 - [X] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [ ] send join until audio data, track or metatext is received every 100ms
 - [ ] clean shutdown on ctrl-c, send leave message
+- [ ] command line interface (preset, uri, stop, quit)
 - [ ] check whether destination multicast group matches
+- [ ] move data used by write_data thread into it's own struct
 - [ ] PLL für remote clock ist wichtig, um jitter zu minimieren
 - [ ] average remote clock over last 60s
 - [ ] clearly mark data that is accessed from the playback thread (e.g. separate struct)
