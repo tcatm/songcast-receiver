@@ -34,8 +34,18 @@ struct uri *parse_uri(char *uri_string) {
 }
 
 void free_uri(struct uri *uri) {
+  if (uri == NULL);
+    return;
+
   free(uri->scheme);
   free(uri->host);
   free(uri->path);
   free(uri);
+}
+
+bool uri_equal(const struct uri *a, const struct uri *b) {
+  return (strcmp(a->scheme, b->scheme) == 0) &&
+         (strcmp(a->host, b->host) == 0) &&
+         (strcmp(a->path, b->path) == 0) &&
+         (a->port == b->port);
 }

@@ -89,13 +89,15 @@
     preset <number>
     uri <uri>
     stop
+    quit
 */
-
-enum ReceiverState {INVALID, IDLE, RESOLVING_PRESET, RESOLVING_ZONE, WATCHING_ZONE};
 
 struct ReceiverData {
   int efd;
-  enum ReceiverState state;
+  int ohz_fd;
+  unsigned int preset;
+  char *zone_id;
+  struct uri *uri;
 };
 
 struct handler {
@@ -106,6 +108,34 @@ struct handler {
 
 void receiver(const char *uri_string, unsigned int preset);
 int open_ohz_socket(void);
+
+char *parse_preset_metadata(char *data, size_t length) {
+  xmlDocPtr metadata = xmlReadMemory(data, length, "noname.xml", NULL, 0);
+
+  if (metadata == NULL) {
+    fprintf(stderr, "Could not parse metadata\n");
+    return NULL;
+  }
+
+  xmlXPathContextPtr context;
+  xmlXPathObjectPtr result;
+
+  context = xmlXPathNewContext(metadata);
+  result = xmlXPathEvalExpression("//*[local-name()='res']/text()", context);
+  xmlXPathFreeContext(context);
+  if (result == NULL || xmlXPathNodeSetIsEmpty(result->nodesetval)) {
+    xmlCleanupParser();
+    fprintf(stderr, "Could not find URI in metadata\n");
+    return NULL;
+  }
+
+  xmlChar *uri = xmlXPathCastToString(result);
+  char *s = strdup(uri);
+  xmlFree(uri);
+  xmlCleanupParser();
+
+  return s;
+}
 
 void add_fd(int efd, struct handler *handler, uint32_t events) {
 	struct epoll_event event = {};
@@ -558,44 +588,53 @@ void handle_stdin(int fd, uint32_t events, void *userdata) {
     error(1, errno, "fgets");
 
   printf("got: %s\n", s);
+
+  // Commands need to reset preset and zone_id, set URI to OHM_NULL_URI
 }
 
 bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
   if (preset == 0)
     return false;
 
-  change_state(receiver, RESOLVING_PRESET, &preset);
+  free_uri(receiver->uri);
+  free(receiver->zone_id);
+  receiver->preset = preset;
 }
 
-void goto_uri(struct ReceiverData *receiver, char *uri_string) {
+bool goto_uri(struct ReceiverData *receiver, char *uri_string) {
   printf("goto_uri %s\n", uri_string);
 
   struct uri *uri = parse_uri(uri_string);
 
-  receiver->next_state = IDLE;
-
   if (strcmp(uri->scheme, "ohz") == 0) {
     printf("Got zone %s\n", uri->path);
-    change_state(receiver, RESOLVING_ZONE, uri->path);
-    goto end;
+    free(receiver->zone_id);
+    receiver->preset = 0;
+    receiver->zone_id = strdup(uri->path);
+    // TODO trigger zone query here using zone_id
+    // This will not stop playback.
+    return true;
   } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0) {
-    if (receiver->zone_id != NULL)
-      change_state(receiver, WATCHING_ZONE, )
+    free_uri(receiver->uri);
+    receiver->preset = 0;
 
     // TODO check if uri differs from current uri
     // TODO stop player, reset track and metadata
     // TODO change player URI
     if (is_ohm_null_uri(uri)) {
+      // TODO Stop playback.
       printf("Got null URI\n");
-
-    } else {
+    } else if (!uri_equal(uri, receiver->uri)) {
+      //stop_playback()
       //play_uri(uri);
     }
+
+    return true;
   } else
     fprintf(stderr, "unknown URI scheme \"%s\"", uri->scheme);
 
-end:
   free_uri(uri);
+  return false;
 }
 
 // Wenn eine zone id gesetzt ist, wird auf Änderungen in dieser Zone ID gehorcht.
@@ -611,40 +650,12 @@ end:
 // - remove try timer
 // - remove OHZ handler
 
-// A state may take an optional parameter. This should be a pointer?
-
-// A fiber gets initialized by calling start.
-struct fiber resolve_ohz = {
-  .start = add ohz handler, add retry timer, send request,
-  .handle_ohz = struct handler -> check for uri, if match: exit fiber
-  .handle_timeout = struct handler -> send request,
-};
-
-void change_state(struct ReceiverData *receiver, enum ReceiverState new_state, void *param) {
-  // TODO exit current state
-  // TODO start new state
-
-  receiver->state = new_state;
-
-  switch (new_state) {
-    case IDLE:
-      break;
-    case RESOLVING_PRESET:
-      // TODO set preset, call init
-    case RESOLVING_ZONE:
-      // TODO set zone, call init
-    case WATCHING_ZONE:
-      // TODO set zone, call init
-    default:
-      error(1, 0, "Invalid state\n");
-  }
-}
 
 void receiver(const char *uri_string, unsigned int preset) {
   struct ReceiverData receiver = {
-    .state = IDLE,
     .preset = 0,
     .zone_id = NULL,
+    .uri = NULL,
   };
 
   int maxevents = 64;
@@ -657,15 +668,12 @@ void receiver(const char *uri_string, unsigned int preset) {
   struct handler stdin_handler = {
     .fd = STDIN_FILENO,
     .func = handle_stdin,
-    .userdata = NULL,
+    .userdata = &receiver,
   };
 
   add_fd(receiver.efd, &stdin_handler, EPOLLIN);
 
-  //int ohz_fd = open_ohz_socket();
-  //add_fd(efd, ohz_fd, EPOLLIN);
-
-  char *zone = "";
+  receiver.ohz_fd = open_ohz_socket();
 
   if (preset != 0)
     goto_preset(&receiver, preset);
@@ -674,23 +682,26 @@ void receiver(const char *uri_string, unsigned int preset) {
     goto_uri(&receiver, uri_string);
 
   while (1) {
-    // TODO handle any state work here
-    // check if next_state is not INVALID, then we have a state change
-    // exit existing state
-    // enter new state
-    // this needs to reset preset/zone?2
-    // needs some kind of pointer to the current state...
-    // for handling state specific fds
-    // timer is really only about sending a packet. request or listen...
-    // stuff pointer to some functions in event.data.ptr?
-    // call handle from that struct?
-    // stdin is handled outside of the state machine
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-    // There will be two timers
-    //  - request retry timer
-    //  - listen timer
-    // Can we share the same timer?
-    // states create their own timerfd
+    // 2 timers
+    // - 100ms retry timer
+    // - calculate delay
+    // - use epoll_wait timeout
+    // - check in start of while loop
+    // preset, zone_id, uri_string
+    //      0     NULL        NULL no action
+    //      0     NULL         set no action (uri should be playing)
+    //      0      set        NULL resolve uri after 100ms timeout, watch zone
+    //      0      set         set watch zone
+    //      1     NULL        NULL resolve preset after 100ms
+    //      1     NULL         set resolve preset after 100ms
+    //x      1      set        NULL invalid state, no action
+    //x      1      set         set invalid state, no action
+
+    // Invalid state
+    assert(!(receiver.preset != 0 && receiver.zone_id != NULL));
 
 		int n = epoll_wait(receiver.efd, events, maxevents, 100);
 
