@@ -12,7 +12,6 @@
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include <libxml/xpath.h>
-#include <uriparser/Uri.h>
 #include <time.h>
 #include <assert.h>
 #include <fcntl.h>
@@ -21,6 +20,7 @@
 #include "ohz_v1.h"
 #include "ohm_v1.h"
 #include "player.h"
+#include "uri.h"
 
 #define OHM_NULL_URI "ohm://0.0.0.0:0"
 
@@ -94,10 +94,8 @@
 enum ReceiverState {INVALID, IDLE, RESOLVING_PRESET, RESOLVING_ZONE, WATCHING_ZONE};
 
 struct ReceiverData {
+  int efd;
   enum ReceiverState state;
-  enum ReceiverState next_state;
-  unsigned int preset;
-  char *zone_id;
 };
 
 struct handler {
@@ -125,79 +123,6 @@ void del_fd(int efd, struct handler *handler) {
 	int s = epoll_ctl(efd, EPOLL_CTL_ADD, handler->fd, NULL);
 	if (s == -1)
 		error(1, errno, "epoll_ctl");
-}
-
-char *parse_preset_metadata(char *data, size_t length) {
-  xmlDocPtr metadata = xmlReadMemory(data, length, "noname.xml", NULL, 0);
-
-  if (metadata == NULL) {
-    fprintf(stderr, "Could not parse metadata\n");
-    return NULL;
-  }
-
-  xmlXPathContextPtr context;
-  xmlXPathObjectPtr result;
-
-  context = xmlXPathNewContext(metadata);
-  result = xmlXPathEvalExpression("//*[local-name()='res']/text()", context);
-  xmlXPathFreeContext(context);
-  if (result == NULL || xmlXPathNodeSetIsEmpty(result->nodesetval)) {
-    xmlCleanupParser();
-    fprintf(stderr, "Could not find URI in metadata\n");
-    return NULL;
-  }
-
-  xmlChar *uri = xmlXPathCastToString(result);
-  char *s = strdup(uri);
-  xmlFree(uri);
-  xmlCleanupParser();
-
-  return s;
-}
-
-char *UriTextRangeString(UriTextRangeA *textrange) {
-  return strndup(textrange->first, textrange->afterLast - textrange->first);
-}
-
-struct uri {
-  char *scheme;
-  char *host;
-  int port;
-  char *path;
-};
-
-struct uri *parse_uri(char *uri_string) {
-  UriParserStateA state;
-  UriUriA uri;
-
-  state.uri = &uri;
-
-  if (uriParseUriA(&state, uri_string) != URI_SUCCESS) {
-    uriFreeUriMembersA(&uri);
-    error(1, 0, "Could not parse URI");
-  }
-
-  struct uri *s = calloc(1, sizeof(struct uri));
-
-  s->scheme = UriTextRangeString(&uri.scheme);
-  s->host = UriTextRangeString(&uri.hostText);
-  s->port = atoi(UriTextRangeString(&uri.portText));
-
-  if (&uri.pathHead->text != NULL)
-    s->path = UriTextRangeString(&uri.pathHead->text);
-  else
-    s->path = strdup("");
-
-  uriFreeUriMembersA(&uri);
-
-  return s;
-}
-
-void free_uri(struct uri *uri) {
-  free(uri->scheme);
-  free(uri->host);
-  free(uri->path);
-  free(uri);
 }
 
 bool is_ohm_null_uri(struct uri *uri) {
@@ -639,8 +564,7 @@ bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
   if (preset == 0)
     return false;
 
-  receiver->next_state = RESOLVING_PRESET;
-  receiver->preset = preset;
+  change_state(receiver, RESOLVING_PRESET, &preset);
 }
 
 void goto_uri(struct ReceiverData *receiver, char *uri_string) {
@@ -652,12 +576,13 @@ void goto_uri(struct ReceiverData *receiver, char *uri_string) {
 
   if (strcmp(uri->scheme, "ohz") == 0) {
     printf("Got zone %s\n", uri->path);
-    receiver->zone_id = uri->path;
-    receiver->next_state = RESOLVING_ZONE;
+    change_state(receiver, RESOLVING_ZONE, uri->path);
+    goto end;
   } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0) {
     if (receiver->zone_id != NULL)
-      receiver->next_state = WATCHING_ZONE;
+      change_state(receiver, WATCHING_ZONE, )
 
+    // TODO check if uri differs from current uri
     // TODO stop player, reset track and metadata
     // TODO change player URI
     if (is_ohm_null_uri(uri)) {
@@ -669,23 +594,64 @@ void goto_uri(struct ReceiverData *receiver, char *uri_string) {
   } else
     fprintf(stderr, "unknown URI scheme \"%s\"", uri->scheme);
 
+end:
   free_uri(uri);
+}
+
+// Wenn eine zone id gesetzt ist, wird auf Änderungen in dieser Zone ID gehorcht.
+// Wenn ein preset gesetzt ist, wird auf eine Antwort für das Preset gewartet.
+// Wenn ein preset gesetzt ist und noch keine Antwort kam, wird noch 100ms nochmal gefragt.
+// Wenn eine zone id gesetzt ist und noch keine antwort kam, wird nach 100ms nochmal gefragt.
+
+// Resolve preset
+// - add OHZ handler
+// - add retry timer
+// - send request
+// - when URI received
+// - remove try timer
+// - remove OHZ handler
+
+// A state may take an optional parameter. This should be a pointer?
+
+// A fiber gets initialized by calling start.
+struct fiber resolve_ohz = {
+  .start = add ohz handler, add retry timer, send request,
+  .handle_ohz = struct handler -> check for uri, if match: exit fiber
+  .handle_timeout = struct handler -> send request,
+};
+
+void change_state(struct ReceiverData *receiver, enum ReceiverState new_state, void *param) {
+  // TODO exit current state
+  // TODO start new state
+
+  receiver->state = new_state;
+
+  switch (new_state) {
+    case IDLE:
+      break;
+    case RESOLVING_PRESET:
+      // TODO set preset, call init
+    case RESOLVING_ZONE:
+      // TODO set zone, call init
+    case WATCHING_ZONE:
+      // TODO set zone, call init
+    default:
+      error(1, 0, "Invalid state\n");
+  }
 }
 
 void receiver(const char *uri_string, unsigned int preset) {
   struct ReceiverData receiver = {
     .state = IDLE,
-    .next_state = INVALID,
     .preset = 0,
     .zone_id = NULL,
   };
 
-  int efd;
   int maxevents = 64;
   struct epoll_event events[maxevents];
 
-  efd = epoll_create1(0);
-  if (efd == -1)
+  receiver.efd = epoll_create1(0);
+  if (receiver.efd == -1)
     error(1, errno, "epoll_create");
 
   struct handler stdin_handler = {
@@ -694,7 +660,7 @@ void receiver(const char *uri_string, unsigned int preset) {
     .userdata = NULL,
   };
 
-  add_fd(efd, &stdin_handler, EPOLLIN);
+  add_fd(receiver.efd, &stdin_handler, EPOLLIN);
 
   //int ohz_fd = open_ohz_socket();
   //add_fd(efd, ohz_fd, EPOLLIN);
@@ -726,7 +692,7 @@ void receiver(const char *uri_string, unsigned int preset) {
     // Can we share the same timer?
     // states create their own timerfd
 
-		int n = epoll_wait(efd, events, maxevents, 100);
+		int n = epoll_wait(receiver.efd, events, maxevents, 100);
 
     if (n < 0)
       error(1, errno, "epoll_wait");
