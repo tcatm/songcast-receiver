@@ -25,66 +25,6 @@
 #define OHM_NULL_URI "ohm://0.0.0.0:0"
 
 /*
-  States:
-    IDLE
-      In this state only the OHZ socket is connected.
-      The player is inactive and no stream is played.
-      The receiver is waiting for a command on stdin
-      to either resolve a preset or play an URI.
-
-      Enter
-        -
-
-      Leave
-        -
-
-    RESOLVING_PRESET
-      In this state the receiver is trying to resolve
-      a preset number to an URI. It will continuously
-      send requests every 100ms until a response matching
-      the preset number is received.
-
-      When a response is received and the URI is an OHZ URI
-      the state is changed to WATCHING_ZONE.
-
-      If the response contains and OHM/OHU URI the state
-      is changed to PLAYING_OHM.
-
-      Enter
-        The preset number is set when entering the state.
-        The 100ms timer is started.
-
-      Leave
-        The 100ms timer is stopped.
-
-    RESOLVING_ZONE
-      In this state the receiver is resolving a zone.
-      When a response is received, the state is changed to
-      WATCHING_ZONE and the URI is played.
-
-      The URI must be a OHM/OHU URI.
-
-      If no response is received within 100ms, the request
-      is sent again.
-
-      Enter
-        The zone id is set when entering the state.
-        The 100ms timer is started.
-
-      Leave
-        The 100ms timer is stopped.
-
-    WATCHING_ZONE
-      In this state the receiver is watching a zone.
-      If a new URI is received, the player URI is changed.
-
-      Enter
-        The zone id is set when entering the state.
-
-      Leave
-        The player is stopped.
-
-
   Commands
     preset <number>
     uri <uri>
@@ -92,21 +32,30 @@
     quit
 */
 
-struct ReceiverData {
-  int efd;
-  int ohz_fd;
-  unsigned int preset;
-  char *zone_id;
-  struct uri *uri;
-};
-
 struct handler {
   int fd;
   void (*func)(int fd, uint32_t events, void *userdata);
   void *userdata;
 };
 
+struct ReceiverData {
+  int efd;
+  int ohz_fd;
+  int ohm_fd;
+  unsigned int preset;
+  char *zone_id;
+  struct uri *uri;
+  struct timespec last_preset_request, last_zone_request, last_playback_request, last_listen;
+
+  bool unicast;
+  int slave_count;
+  struct sockaddr_in *my_slaves;
+  struct handler ohm_handler;
+};
+
+bool goto_uri(struct ReceiverData *receiver, const char *uri_string);
 void receiver(const char *uri_string, unsigned int preset);
+void handle_ohm(int fd, uint32_t events, void *userdata);
 int open_ohz_socket(void);
 
 char *parse_preset_metadata(char *data, size_t length) {
@@ -150,7 +99,7 @@ void add_fd(int efd, struct handler *handler, uint32_t events) {
 }
 
 void del_fd(int efd, struct handler *handler) {
-	int s = epoll_ctl(efd, EPOLL_CTL_ADD, handler->fd, NULL);
+	int s = epoll_ctl(efd, EPOLL_CTL_DEL, handler->fd, NULL);
 	if (s == -1)
 		error(1, errno, "epoll_ctl");
 }
@@ -229,11 +178,14 @@ void send_preset_query(int fd, unsigned int preset) {
     error(1, errno, "sendmsg failed");
 }
 
-void send_zone_query(int fd, const char *host, unsigned int port, const char *zone) {
+void send_zone_query(int fd, const char *zone) {
+  assert(zone != NULL);
+  printf("Sending zone query: %s\n", zone);
+
   struct sockaddr_in dst = {
     .sin_family = AF_INET,
-    .sin_port = htons(port),
-    .sin_addr.s_addr = inet_addr(host)
+    .sin_port = htons(51972),
+    .sin_addr.s_addr = inet_addr("239.255.255.250")
   };
 
   ohz1_zone_query query = {
@@ -291,7 +243,8 @@ char *handle_preset_info(ohz1_preset_info *info, unsigned int preset) {
   return NULL;
 }
 
-char *handle_ohz(int fd, const char *zone, unsigned int preset) {
+void handle_ohz(int fd, uint32_t events, void *userdata) {
+  struct ReceiverData *receiver = userdata;
   // This function can change the state depending on whether
   // we are waiting for a preset or an URI.
   // Actually, it can only ever return an URI.
@@ -301,34 +254,42 @@ char *handle_ohz(int fd, const char *zone, unsigned int preset) {
 
   if (n < 0) {
     if (errno == EAGAIN)
-      return NULL;
+      return;
 
     error(1, errno, "recv");
   }
 
   if (n < sizeof(ohz1_zone_uri))
-    return NULL;
+    return;
 
   ohz1_header *hdr = (void *)buf;
 
   if (strncmp(hdr->signature, "Ohz ", 4) != 0)
-    return NULL;
+    return;
 
   if (hdr->version != 1)
-    return NULL;
+    return;
 
+  char *uri = NULL;
   switch (hdr->type) {
     case OHZ1_ZONE_URI:
-      return handle_zone_uri((ohz1_zone_uri *)buf, zone);
+      if (receiver->zone_id != NULL)
+        uri = handle_zone_uri((ohz1_zone_uri *)buf, receiver->zone_id);
       break;
     case OHZ1_PRESET_INFO:
-      return handle_preset_info((ohz1_preset_info *)buf, preset);
+      if (receiver->preset != 0)
+        uri = handle_preset_info((ohz1_preset_info *)buf, receiver->preset);
       break;
     default:
       break;
   }
 
-  return NULL;
+  if (uri != NULL)
+    goto_uri(receiver, uri);
+
+  free(uri);
+
+  return;
 }
 
 int open_ohm_socket(const char *host, unsigned int port, bool unicast) {
@@ -419,165 +380,175 @@ void dump_metatext(ohm1_metatext *meta) {
   printf("Metatext: %.*s\n", htonl(meta->length), meta->data);
 }
 
-int update_slaves(struct sockaddr_in *my_slaves[], ohm1_slave *slave) {
-  free(my_slaves);
-  int slave_count = htonl(slave->count);
-  printf("Updating slaves: %zi\n", slave_count);
+void update_slaves(struct ReceiverData *receiver, ohm1_slave *slave) {
+  receiver->slave_count = htonl(slave->count);
+  printf("Updating slaves: %zi\n", receiver->slave_count);
+  free(receiver->my_slaves);
 
-  my_slaves = calloc(slave_count, sizeof(struct sockaddr_in));
+  receiver->my_slaves = calloc(receiver->slave_count, sizeof(struct sockaddr_in));
 
-  for (size_t i = 0; i < slave_count; i++) {
-    *my_slaves[i] = (struct sockaddr_in) {
+  for (size_t i = 0; i < receiver->slave_count; i++) {
+    receiver->my_slaves[i] = (struct sockaddr_in) {
       .sin_family = AF_INET,
       .sin_port = slave->slaves[i].port,
       .sin_addr.s_addr = slave->slaves[i].addr
     };
-  }
 
-  return slave_count;
+    char slave_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &receiver->my_slaves[i].sin_addr, slave_str, sizeof(slave_str));
+    printf("Slave: %s\n", slave_str);
+  }
 }
 
-void play_uri(struct uri *uri) {
-  printf("Playing %s://%s:%d/%p", uri->scheme, uri->host, uri->port, uri->path);
+void stop_playback(struct ReceiverData *receiver) {
+  if (receiver->ohm_fd == 0)
+    return;
 
-  // TODO check if URI is null URI and stop playback
-  bool unicast = strncmp(uri->scheme, "ohu", 3) == 0;
-  int slave_count = 0;
-  struct sockaddr_in *my_slaves;
+  printf("Stopping playback.\n");
 
-  int fd = open_ohm_socket(uri->host, uri->port, unicast);
+  if (receiver->unicast)
+    ohm_send_event(receiver->ohm_fd, receiver->uri, OHM1_LEAVE);
 
-  uint8_t buf[8192];
+  // This will remove the handler, too.
+  close(receiver->ohm_fd);
 
-  struct timeval timeout = {
-    .tv_usec = 100000
+  free(receiver->my_slaves);
+  receiver->slave_count = 0;
+  receiver->my_slaves = NULL;
+  receiver->ohm_fd = 0;
+
+  player_stop();
+}
+
+void play_uri(struct ReceiverData *receiver) {
+  // TODO merge with mainloop
+  printf("Playing %s://%s:%d/%s\n", receiver->uri->scheme, receiver->uri->host, receiver->uri->port, receiver->uri->path);
+
+  assert(!is_ohm_null_uri(receiver->uri));
+
+  receiver->unicast = strncmp(receiver->uri->scheme, "ohu", 3) == 0;
+  receiver->slave_count = 0;
+  receiver->ohm_fd = open_ohm_socket(receiver->uri->host, receiver->uri->port, receiver->unicast);
+
+  receiver->ohm_handler = (struct handler) {
+    .fd = receiver->ohm_fd,
+    .func = handle_ohm,
+    .userdata = receiver,
   };
 
-  if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
-    error(1, errno, "setsockopt(SO_RCVTIMEO) failed");
+  add_fd(receiver->efd, &receiver->ohm_handler, EPOLLIN);
 
-  struct timespec last_listen;
+  ohm_send_event(receiver->ohm_fd, receiver->uri, OHM1_JOIN);
+  clock_gettime(CLOCK_MONOTONIC, &receiver->last_listen);
+}
 
-  ohm_send_event(fd, uri, OHM1_JOIN);
-  ohm_send_event(fd, uri, OHM1_LISTEN);
-  clock_gettime(CLOCK_MONOTONIC, &last_listen);
+void handle_ohm(int fd, uint32_t events, void *userdata) {
+  struct ReceiverData *receiver = userdata;
+  struct sockaddr_storage src_addr;
+  uint8_t buf[8192];
+
+  char ctrl[CMSG_SPACE(sizeof(struct timeval))];
+  struct cmsghdr *cmsg = (struct cmsghdr *)&ctrl;
+
+  struct iovec iov[1] = {
+    {
+      .iov_base = &buf,
+      .iov_len = sizeof(buf)
+    }
+  };
+
+  struct msghdr msg = {
+    .msg_name = &src_addr,
+    .msg_namelen = sizeof(src_addr),
+    .msg_iov = iov,
+    .msg_iovlen = 1,
+    .msg_control = ctrl,
+    .msg_controllen = sizeof(ctrl)
+  };
+
+  // TODO determine whether to send listen here
+  ssize_t n = recvmsg(fd, &msg, 0);
+
+  struct timespec ts_recv;
+
+  if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP &&
+    cmsg->cmsg_len == CMSG_LEN(sizeof(struct timeval))) {
+    struct timeval *tv_recv = (struct timeval *)CMSG_DATA(cmsg);
+    ts_recv.tv_sec = tv_recv->tv_sec;
+    ts_recv.tv_nsec = (long long int)tv_recv->tv_usec * 1000;
+
+    // TODO convert to monotonic here?
+  } else {
+    // We always require the timestamp for now.
+    assert(false);
+  }
+
+  if (n < 0) {
+    if (errno == EAGAIN)
+      return;
+
+    return;
+  }
+
+  if (n < sizeof(ohm1_header))
+    return;
+
+  ohm1_header *hdr = (void *)buf;
+
+  if (strncmp(hdr->signature, "Ohm ", 4) != 0)
+    return;
+
+  if (hdr->version != 1)
+    return;
+
+  // Forwarding
+  // TODO move forwarding to separate functin
+  if (receiver->slave_count > 0)
+    switch (hdr->type) {
+      case OHM1_AUDIO:
+      case OHM1_TRACK:
+      case OHM1_METATEXT:
+        for (size_t i = 0; i < receiver->slave_count; i++) {
+          // Ignore any errors when sending to slaves.
+          // There is nothing we could do to help.
+          sendto(receiver->ohm_fd, &buf, n, 0, (const struct sockaddr*) &receiver->my_slaves[i], sizeof(struct sockaddr));
+        }
+        break;
+      default:
+        break;
+    }
 
   struct missing_frames *missing;
 
-  while (1) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+  switch (hdr->type) {
+    case OHM1_LISTEN:
+      if (!receiver->unicast)
+        clock_gettime(CLOCK_MONOTONIC, &receiver->last_listen);
+      break;
+    case OHM1_AUDIO:
+      missing = handle_frame((void*)buf, &ts_recv);
 
-    now.tv_nsec -= 750000000; // send listen every 750ms
-    if (timespec_cmp(now, last_listen) > 0) {
-      // TODO resend join if no audio for a few seconds
-      //      can this be implemented using the ohz state machine?
-      ohm_send_event(fd, uri, OHM1_LISTEN);
-      clock_gettime(CLOCK_MONOTONIC, &last_listen);
-    }
+      if (missing)
+        ohm_send_resend_request(receiver->ohm_fd, receiver->uri, missing);
 
-    struct sockaddr_storage src_addr;
-
-    char ctrl[CMSG_SPACE(sizeof(struct timeval))];
-    struct cmsghdr *cmsg = (struct cmsghdr *)&ctrl;
-
-    struct iovec iov[1] = {
-      {
-        .iov_base = &buf,
-        .iov_len = sizeof(buf)
-      }
-    };
-
-    struct msghdr msg = {
-      .msg_name = &src_addr,
-      .msg_namelen = sizeof(src_addr),
-      .msg_iov = iov,
-      .msg_iovlen = 1,
-      .msg_control = ctrl,
-      .msg_controllen = sizeof(ctrl)
-    };
-
-    // TODO determine whether to send listen here
-    ssize_t n = recvmsg(fd, &msg, 0);
-
-    struct timespec ts_recv;
-
-    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMP &&
-      cmsg->cmsg_len == CMSG_LEN(sizeof(struct timeval))) {
-      struct timeval *tv_recv = (struct timeval *)CMSG_DATA(cmsg);
-      ts_recv.tv_sec = tv_recv->tv_sec;
-      ts_recv.tv_nsec = (long long int)tv_recv->tv_usec * 1000;
-
-      // TODO convert to monotonic here?
-    } else {
-      // We always require the timestamp for now.
-      assert(false);
-    }
-
-    if (n < 0) {
-      if (errno == EAGAIN)
-        continue;
-
-      error(1, errno, "recv");
-    }
-
-    if (n < sizeof(ohm1_header))
-      continue;
-
-    ohm1_header *hdr = (void *)buf;
-
-    if (strncmp(hdr->signature, "Ohm ", 4) != 0)
-      continue;
-
-    if (hdr->version != 1)
-      continue;
-
-    // Forwarding
-    if (slave_count > 0)
-      switch (hdr->type) {
-        case OHM1_AUDIO:
-        case OHM1_TRACK:
-        case OHM1_METATEXT:
-          for (size_t i = 0; i < slave_count; i++) {
-            // Ignore any errors when sending to slaves.
-            // There is nothing we could do to help.
-            sendto(fd, &buf, n, 0, (const struct sockaddr*) &my_slaves[i], sizeof(struct sockaddr));
-          }
-          break;
-        default:
-          break;
-      }
-
-    switch (hdr->type) {
-      case OHM1_LISTEN:
-        if (!unicast)
-          clock_gettime(CLOCK_MONOTONIC, &last_listen);
-        break;
-      case OHM1_AUDIO:
-        missing = handle_frame((void*)buf, &ts_recv);
-
-        if (missing)
-          ohm_send_resend_request(fd, uri, missing);
-
-        free(missing);
-        break;
-      case OHM1_TRACK:
-        dump_track((void *)buf);
-        break;
-      case OHM1_METATEXT:
-        dump_metatext((void *)buf);
-        break;
-      case OHM1_SLAVE:
-        slave_count = update_slaves(&my_slaves, (void *)buf);
-        break;
-      case OHM1_RESEND_REQUEST:
-      case OHM1_LEAVE:
-      case OHM1_JOIN:
-        // not used by receivers
-        break;
-      default:
-        printf("Type %i not handled yet\n", hdr->type);
-    }
+      free(missing);
+      break;
+    case OHM1_TRACK:
+      dump_track((void *)buf);
+      break;
+    case OHM1_METATEXT:
+      dump_metatext((void *)buf);
+      break;
+    case OHM1_SLAVE:
+      update_slaves(receiver, (void *)buf);
+      break;
+    case OHM1_RESEND_REQUEST:
+    case OHM1_LEAVE:
+    case OHM1_JOIN:
+      // not used by receivers
+      break;
+    default:
+      printf("Type %i not handled yet\n", hdr->type);
   }
 }
 
@@ -599,9 +570,14 @@ bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
   free_uri(receiver->uri);
   free(receiver->zone_id);
   receiver->preset = preset;
+
+  send_preset_query(receiver->ohz_fd, preset);
+  clock_gettime(CLOCK_MONOTONIC, &receiver->last_preset_request);
 }
 
-bool goto_uri(struct ReceiverData *receiver, char *uri_string) {
+bool goto_uri(struct ReceiverData *receiver, const char *uri_string) {
+  assert(uri_string != NULL);
+
   printf("goto_uri %s\n", uri_string);
 
   struct uri *uri = parse_uri(uri_string);
@@ -609,25 +585,28 @@ bool goto_uri(struct ReceiverData *receiver, char *uri_string) {
   if (strcmp(uri->scheme, "ohz") == 0) {
     printf("Got zone %s\n", uri->path);
     free(receiver->zone_id);
+    free_uri(receiver->uri);
     receiver->preset = 0;
     receiver->zone_id = strdup(uri->path);
-    // TODO trigger zone query here using zone_id
+    receiver->uri = NULL;
+    send_zone_query(receiver->ohz_fd, uri->path);
+    clock_gettime(CLOCK_MONOTONIC, &receiver->last_zone_request);
     // This will not stop playback.
     return true;
   } else if (strcmp(uri->scheme, "ohm") == 0 || strcmp(uri->scheme, "ohu") == 0) {
-    free_uri(receiver->uri);
     receiver->preset = 0;
 
-    // TODO check if uri differs from current uri
-    // TODO stop player, reset track and metadata
-    // TODO change player URI
-    if (is_ohm_null_uri(uri)) {
-      // TODO Stop playback.
-      printf("Got null URI\n");
-    } else if (!uri_equal(uri, receiver->uri)) {
-      //stop_playback()
-      //play_uri(uri);
-    }
+    if (receiver->uri == NULL || !uri_equal(uri, receiver->uri)) {
+      free_uri(receiver->uri);
+      stop_playback(receiver);
+      receiver->uri = uri;
+
+      if (!is_ohm_null_uri(uri))
+        play_uri(receiver);
+      else
+        printf("Got null URI\n");
+    } else
+      free_uri(uri);
 
     return true;
   } else
@@ -637,25 +616,12 @@ bool goto_uri(struct ReceiverData *receiver, char *uri_string) {
   return false;
 }
 
-// Wenn eine zone id gesetzt ist, wird auf Änderungen in dieser Zone ID gehorcht.
-// Wenn ein preset gesetzt ist, wird auf eine Antwort für das Preset gewartet.
-// Wenn ein preset gesetzt ist und noch keine Antwort kam, wird noch 100ms nochmal gefragt.
-// Wenn eine zone id gesetzt ist und noch keine antwort kam, wird nach 100ms nochmal gefragt.
-
-// Resolve preset
-// - add OHZ handler
-// - add retry timer
-// - send request
-// - when URI received
-// - remove try timer
-// - remove OHZ handler
-
-
 void receiver(const char *uri_string, unsigned int preset) {
   struct ReceiverData receiver = {
     .preset = 0,
     .zone_id = NULL,
     .uri = NULL,
+    .my_slaves = NULL,
   };
 
   int maxevents = 64;
@@ -665,6 +631,8 @@ void receiver(const char *uri_string, unsigned int preset) {
   if (receiver.efd == -1)
     error(1, errno, "epoll_create");
 
+  receiver.ohz_fd = open_ohz_socket();
+
   struct handler stdin_handler = {
     .fd = STDIN_FILENO,
     .func = handle_stdin,
@@ -673,7 +641,13 @@ void receiver(const char *uri_string, unsigned int preset) {
 
   add_fd(receiver.efd, &stdin_handler, EPOLLIN);
 
-  receiver.ohz_fd = open_ohz_socket();
+  struct handler ohz_handler = {
+    .fd = receiver.ohz_fd,
+    .func = handle_ohz,
+    .userdata = &receiver,
+  };
+
+  add_fd(receiver.efd, &ohz_handler, EPOLLIN);
 
   if (preset != 0)
     goto_preset(&receiver, preset);
@@ -684,6 +658,31 @@ void receiver(const char *uri_string, unsigned int preset) {
   while (1) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
+
+    bool bpreset = receiver.preset != 0;
+    bool bzone = receiver.zone_id != NULL;
+    bool buri = receiver.uri != NULL;
+
+    if (bzone && !buri) {
+      double diff = timespec_sub(&now, &receiver.last_zone_request);
+      if (diff > 0.1) {
+        send_zone_query(receiver.ohz_fd, receiver.zone_id);
+        receiver.last_zone_request = now;
+      }
+    } else if (bpreset) {
+      double diff = timespec_sub(&now, &receiver.last_preset_request);
+      if (diff > 0.1) {
+        send_preset_query(receiver.ohz_fd, receiver.preset);
+        receiver.last_preset_request = now;
+      }
+    }
+
+    if (buri && !is_ohm_null_uri(receiver.uri)) {
+      if (timespec_sub(&now, &receiver.last_listen) > 1) {
+        ohm_send_event(receiver.ohm_fd, receiver.uri, OHM1_LISTEN);
+        clock_gettime(CLOCK_MONOTONIC, &receiver.last_listen);
+      }
+    }
 
     // 2 timers
     // - 100ms retry timer
@@ -751,8 +750,6 @@ int main(int argc, char *argv[]) {
     error(1, 0, "Can not specify both preset and URI!");
 
   player_init();
-
   receiver(uri, preset);
-
   free(uri);
 }

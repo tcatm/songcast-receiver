@@ -33,10 +33,10 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
   pa_channel_map map;
   assert(pa_channel_map_init_auto(&map, ss->channels, PA_CHANNEL_MAP_DEFAULT));
 
-  pa_stream *s = pa_stream_new(pulse->context, "Songcast Receiver", ss, &map);
-  pa_stream_set_state_callback(s, stream_state_cb, pulse->mainloop);
-  pa_stream_set_write_callback(s, stream_request_cb, pulse->mainloop);
-  pa_stream_set_underflow_callback(s, stream_underflow_cb, pulse->mainloop);
+  pulse->stream = pa_stream_new(pulse->context, "Songcast Receiver", ss, &map);
+  pa_stream_set_state_callback(pulse->stream, stream_state_cb, pulse->mainloop);
+  pa_stream_set_write_callback(pulse->stream, stream_request_cb, pulse->mainloop);
+  pa_stream_set_underflow_callback(pulse->stream, stream_underflow_cb, pulse->mainloop);
 
   char format[PA_SAMPLE_SPEC_SNPRINT_MAX];
   pa_sample_spec_snprint(format, sizeof(format), ss);
@@ -47,7 +47,7 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
 
   // Connect stream to the default audio output sink
-  assert(pa_stream_connect_playback(s, NULL, bufattr, stream_flags, NULL, NULL) == 0);
+  assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, NULL, NULL) == 0);
 }
 
 void output_init(struct pulse *pulse) {

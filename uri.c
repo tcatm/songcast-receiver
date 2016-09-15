@@ -1,3 +1,4 @@
+#include <error.h>
 #include <uriparser/Uri.h>
 
 #include "uri.h"
@@ -6,7 +7,7 @@ char *UriTextRangeString(UriTextRangeA *textrange) {
   return strndup(textrange->first, textrange->afterLast - textrange->first);
 }
 
-struct uri *parse_uri(char *uri_string) {
+struct uri *parse_uri(const char *uri_string) {
   UriParserStateA state;
   UriUriA uri;
 

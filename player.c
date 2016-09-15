@@ -144,8 +144,11 @@ void player_init(void) {
 }
 
 void player_stop(void) {
-  // TODO stop the player
-  // TODO tear down pulse
+  discard_cache_through(G.cache, G.cache->latest_index);
+  free(G.cache);
+
+  G.state = STOPPED;
+  G.cache = NULL;
 }
 
 bool frame_to_sample_spec(pa_sample_spec *ss, int rate, int channels, int bitdepth) {
@@ -422,7 +425,7 @@ void try_prepare(void) {
 void write_data(pa_stream *s, size_t request) {
   pthread_mutex_lock(&G.mutex);
 
-  if (G.state == STOPPED) {
+  if (G.state == STOPPED || G.cache == NULL) {
     pthread_mutex_unlock(&G.mutex);
     return;
   }

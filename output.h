@@ -5,6 +5,7 @@
 struct pulse {
   pa_threaded_mainloop *mainloop;
   pa_context *context;
+  pa_stream *stream;
 };
 
 void output_init(struct pulse *pulse);
