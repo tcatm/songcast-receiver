@@ -437,6 +437,11 @@ void write_data(pa_stream *s, size_t request) {
   if (G.timing.pa == NULL)
     G.timing.pa = pa_stream_get_timing_info(s);
 
+  pa_operation *o = pa_stream_update_timing_info(G.pulse.stream, NULL, NULL);
+
+  if (o != NULL)
+    pa_operation_unref(o);
+
   struct cache_info info = cache_continuous_size(G.cache);
 
   G.timing.net_offset = (int64_t)info.start_net - (int64_t)info.start;
@@ -467,7 +472,7 @@ void write_data(pa_stream *s, size_t request) {
 
       uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
       uint64_t playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
-                                  pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index - request, ss);
+                                  pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index, ss);
 
       uint64_t play_at = ts + playback_latency;
 
@@ -540,10 +545,13 @@ void stop(pa_stream *s) {
 void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
-  size_t write_index = G.timing.pa->write_index;
+  pa_timing_info ti = *G.timing.pa;
+
+  int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
+
   int frame_size = pa_frame_size(ss);
-  int64_t clock_remote = info->start_net + info->latency_usec;
-  int64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(G.timing.written, ss);
+  int64_t clock_remote = info->start_net + info->latency_usec - G.timing.start_net_usec;
+  int64_t clock_local = ts + G.timing.net_offset - G.timing.start_net_usec + pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
   int clock_delta = clock_local - clock_remote;
   int clock_delta_sgn = ((clock_delta > 0) - (0 > clock_delta));
   int frames_delta = clock_delta_sgn * ((pa_usec_to_bytes(abs(clock_delta), ss) + frame_size / 2) / frame_size);
