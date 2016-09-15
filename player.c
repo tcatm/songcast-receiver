@@ -144,7 +144,9 @@ void player_init(void) {
 }
 
 void player_stop(void) {
-  discard_cache_through(G.cache, G.cache->latest_index);
+  if (G.cache != NULL)
+    discard_cache_through(G.cache, G.cache->latest_index);
+
   free(G.cache);
 
   G.state = STOPPED;
