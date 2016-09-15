@@ -41,10 +41,10 @@ struct cache {
 
 struct timing {
   const pa_timing_info *pa;
-  int64_t pa_offset_bytes;
   int64_t start_net_usec;
   int64_t latency_usec;
   int64_t net_offset;
+  size_t written;
 };
 
 struct {
@@ -495,7 +495,6 @@ void write_data(pa_stream *s, size_t request) {
       info.available -= skip;
 
       // Prepare timing information
-      G.timing.pa_offset_bytes = G.timing.pa->write_index;
       G.timing.start_net_usec = play_at + G.timing.net_offset;
 
       G.state = PLAYING;
@@ -509,6 +508,8 @@ void write_data(pa_stream *s, size_t request) {
   }
 
   play_audio(s, request, &info);
+  G.timing.written += request;
+
   pthread_mutex_unlock(&G.mutex);
   return;
 
@@ -540,7 +541,7 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   size_t write_index = G.timing.pa->write_index;
   int frame_size = pa_frame_size(ss);
   int64_t clock_remote = info->start_net + info->latency_usec;
-  int64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(write_index - G.timing.pa_offset_bytes, ss);
+  int64_t clock_local = G.timing.start_net_usec + pa_bytes_to_usec(G.timing.written, ss);
   int clock_delta = clock_local - clock_remote;
   int clock_delta_sgn = ((clock_delta > 0) - (0 > clock_delta));
   int frames_delta = clock_delta_sgn * ((pa_usec_to_bytes(abs(clock_delta), ss) + frame_size / 2) / frame_size);
