@@ -23,6 +23,9 @@
 - [X] init/destroy for player.c (also to handle null uri)
 - [X] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [X] The time when the **previous** frame was sent over the network (if the timestamped flag is on)
+- [ ] fix handling of stopping stream. make it more robust. can the state cb be used?
+      trigger with BUFFER_LATENCY = 3e3 or lower
+      maybe unref stream in main thread?
 - [ ] send join until audio data, track or metatext is received every 100ms
 - [ ] clean shutdown on ctrl-c, send leave message
 - [ ] command line interface (preset, uri, stop, quit)
