@@ -23,7 +23,7 @@ enum PlayerState {STOPPED, STARTING, PLAYING, STOPPING};
 struct cache_info {
   size_t available;
   int64_t start;
-  int64_t start_net;
+  int64_t net_offset;
   int halt_index;
   int format_change_index;
   bool halt;
@@ -41,9 +41,8 @@ struct cache {
 
 struct timing {
   const pa_timing_info *pa;
-  int64_t start_net_usec;
   int64_t start_local_usec;
-  int64_t net_offset;
+  int64_t initial_net_offset;
   size_t pa_offset_bytes;
   size_t written;
 };
@@ -277,7 +276,7 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     .halt = false,
     .format_change = false,
     .start = 0,
-    .start_net = 0,
+    .net_offset = 0,
     .halt_index = -1,
     .format_change_index = -1,
     .latency_usec = 0,
@@ -285,16 +284,13 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
   uint64_t best_net = 0;
 
-  int end = cache->latest_index;
-
-  uint64_t tss[end];
-  uint64_t ts_nets[end];
   int64_t ts_mean = 0;
-  int64_t ts_net_mean = 0;
   int64_t ts_m2 = 0;
-  int64_t ts_net_m2 = 0;
-  int j = 0;
+  int64_t offset_mean = 0;
+  int64_t offset_m2 = 0;
 
+  int j = 0;
+  int end = cache->latest_index;
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
     if (G.cache->frames[pos] == NULL)
@@ -312,20 +308,20 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0) {
       int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
-
-      int64_t ts_net = latency_to_usec(frame->ss.rate, frame->ts_network) - pa_bytes_to_usec(info.available, &frame->ss);
+      int64_t ts_network = latency_to_usec(frame->ss.rate, frame->ts_network);
+      int64_t offset = frame->ts_recv_usec - ts_network;
 
       if (j > 0) {
         int64_t d = ts - ts_mean;
         ts_mean += d / j;
         ts_m2 += d * (ts - ts_mean);
 
-        d = ts_net - ts_net_mean;
-        ts_net_mean += d / j;
-        ts_net_m2 += d * (ts_net - ts_net_mean);
+        d = offset - offset_mean;
+        offset_mean += d / j;
+        offset_m2 += d * (offset - offset_mean);
       } else {
         ts_mean = ts;
-        ts_net_mean = ts_net;
+        offset_mean = offset;
       }
 
       j++;
@@ -346,10 +342,10 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     return info;
 
   int64_t ts_var = j > 1 ? ts_m2 / (j - 1) : 0;
-  int64_t ts_net_var = j > 1 ? ts_net_m2 / (j - 1) : 0;
+  int64_t offset_var = j > 1 ? offset_m2 / (j - 1) : 0;
 
   info.start = ts_mean - sqrt(ts_var);
-  info.start_net = ts_net_mean - sqrt(ts_net_var);
+  info.net_offset = offset_mean - sqrt(offset_var);
 
   return info;
 }
@@ -448,8 +444,6 @@ void write_data(pa_stream *s, size_t request) {
 
   struct cache_info info = cache_continuous_size(G.cache);
 
-  G.timing.net_offset = (int64_t)info.start_net - (int64_t)info.start;
-
   switch (G.state) {
     case PLAYING:
       break;
@@ -461,18 +455,13 @@ void write_data(pa_stream *s, size_t request) {
         goto silence;
 
       // Can't start playing when we don't have a timestamp
-      if (info.start_net == 0 && info.start == 0)
+      if (info.start == 0)
         goto silence;
 
       pa_usec_t available_usec = pa_bytes_to_usec(info.available, pa_stream_get_sample_spec(s));
 
       // Determine whether we have enough data to start playing right away.
-      int64_t start_at = info.latency_usec;
-
-      if (info.start_net == 0)
-        start_at += info.start;
-      else
-        start_at += info.start_net - G.timing.net_offset;
+      int64_t start_at = info.start + info.latency_usec;
 
       uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
       uint64_t playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
@@ -502,12 +491,11 @@ void write_data(pa_stream *s, size_t request) {
 
       // Adjust cache info
       info.start += delta;
-      info.start_net += delta;
       info.available -= skip;
 
       // Prepare timing information
       G.timing.start_local_usec = play_at;
-      G.timing.start_net_usec = play_at + G.timing.net_offset;
+      G.timing.initial_net_offset = info.net_offset;
       G.timing.pa_offset_bytes = G.timing.pa->write_index;
 
       G.state = PLAYING;
@@ -554,20 +542,18 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   pa_timing_info ti = *G.timing.pa;
   int frame_size = pa_frame_size(ss);
 
-  if (ti.playing == 1) {
-    int64_t net_local_delta = (info->start_net - G.timing.start_net_usec) - (info->start - G.timing.start_local_usec);
-    int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
-    int64_t local_audio_delta = ts - G.timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(G.timing.pa_offset_bytes, ss);
-    int64_t local_local_delta = ts - info->start;
-    int64_t write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
-    // TODO sind die Vorzeichen hier richtig?!
-    int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta - net_local_delta;
+  int64_t net_local_delta = info->net_offset - G.timing.initial_net_offset;
+  int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
+  int64_t local_audio_delta = ts - G.timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(G.timing.pa_offset_bytes, ss);
+  int64_t local_local_delta = ts - info->start;
+  int64_t write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
+  // TODO sind die Vorzeichen hier richtig?!
+  int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta + net_local_delta;
 
-    int total_delta_sgn = ((total_delta > 0) - (0 > total_delta));
-    int frames_delta = total_delta_sgn * ((pa_usec_to_bytes(abs(total_delta), ss) + frame_size / 2) / frame_size);
+  int total_delta_sgn = ((total_delta > 0) - (0 > total_delta));
+  int frames_delta = total_delta_sgn * ((pa_usec_to_bytes(abs(total_delta), ss) + frame_size / 2) / frame_size);
 
-    printf("Timing n-l-d: %6d usec l-a-d: %5d usec l-l-d: %6d usec w-l: %6d usec delta: %4d usec (%3d frames)\n", net_local_delta, local_audio_delta, local_local_delta, write_latency, total_delta, frames_delta);
-  }
+  printf("Timing n-l-d: %6d usec l-a-d: %5d usec l-l-d: %6d usec w-l: %6d usec delta: %4d usec (%3d frames)\n", net_local_delta, local_audio_delta, local_local_delta, write_latency, total_delta, frames_delta);
 
   size_t written = 0;
 
