@@ -43,6 +43,7 @@ struct timing {
   const pa_timing_info *pa;
   int64_t start_local_usec;
   int64_t initial_net_offset;
+  int64_t last_frame_ts;
   size_t pa_offset_bytes;
   size_t written;
 };
@@ -282,12 +283,9 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     .latency_usec = 0,
   };
 
-  uint64_t best_net = 0;
-
   int64_t ts_mean = 0;
-  int64_t ts_m2 = 0;
   int64_t offset_mean = 0;
-  int64_t offset_m2 = 0;
+  int64_t last_frame_ts = 0;
 
   int j = 0;
   int end = cache->latest_index;
@@ -307,19 +305,20 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     info.available += frame->audio_length;
 
     if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0) {
+      // TODO calculate differences somewhere else where the order of frames is monotonic
       int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
       int64_t ts_network = latency_to_usec(frame->ss.rate, frame->ts_network);
-      int64_t offset = frame->ts_recv_usec - ts_network;
+      int64_t offset = last_frame_ts - ts_network;
 
-      if (j > 0) {
+      last_frame_ts = frame->ts_recv_usec;
+
+      if (j > 1) {
         int64_t d = ts - ts_mean;
-        ts_mean += d / j;
-        ts_m2 += d * (ts - ts_mean);
+        ts_mean += d / (j - 1);
 
         d = offset - offset_mean;
-        offset_mean += d / j;
-        offset_m2 += d * (offset - offset_mean);
-      } else {
+        offset_mean += d / (j - 1);
+      } else if (j == 1) {
         ts_mean = ts;
         offset_mean = offset;
       }
@@ -341,11 +340,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   if (j == 0)
     return info;
 
-  int64_t ts_var = j > 1 ? ts_m2 / (j - 1) : 0;
-  int64_t offset_var = j > 1 ? offset_m2 / (j - 1) : 0;
-
-  info.start = ts_mean - sqrt(ts_var);
-  info.net_offset = offset_mean - sqrt(offset_var);
+  info.start = ts_mean;
+  info.net_offset = offset_mean;
 
   return info;
 }
