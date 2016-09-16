@@ -556,11 +556,13 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
     int64_t local_local_delta = ts - info->start;
     int64_t write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
     int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta + net_local_delta;
+    int64_t recv_to_play = ts + write_latency - info->start - info->latency_usec;
 
     int total_delta_sgn = ((total_delta > 0) - (0 > total_delta));
     int frames_delta = total_delta_sgn * ((pa_usec_to_bytes(abs(total_delta), ss) + frame_size / 2) / frame_size);
 
-    printf("Timing n-l-d: %6d usec l-a-d: %5d usec l-l-d: %6d usec w-l: %6d usec delta: %4d usec (%3d frames)\n", net_local_delta, local_audio_delta, local_local_delta, write_latency, total_delta, frames_delta);
+    printf("Timing n-l-d: %6d usec l-a-d: %5d usec l-l-d: %6d usec w-l: %6d usec delta: %4d usec (%3d frames), r-t-p: %4d usec\n",
+           net_local_delta, local_audio_delta, local_local_delta, write_latency, total_delta, frames_delta, recv_to_play);
   }
 
   size_t written = 0;
