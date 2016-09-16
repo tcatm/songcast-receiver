@@ -22,7 +22,7 @@
 - [X] ohm send event could share code with ohm_send_resend_request
 - [X] init/destroy for player.c (also to handle null uri)
 - [X] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
-- [ ] The time when the **previous** frame was sent over the network (if the timestamped flag is on)
+- [X] The time when the **previous** frame was sent over the network (if the timestamped flag is on)
 - [ ] send join until audio data, track or metatext is received every 100ms
 - [ ] clean shutdown on ctrl-c, send leave message
 - [ ] command line interface (preset, uri, stop, quit)

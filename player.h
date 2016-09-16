@@ -11,6 +11,7 @@ struct audio_frame {
   uint64_t ts_due_usec;
   uint64_t ts_network;
   uint64_t ts_media;
+  uint64_t net_offset;
   unsigned int seqnum;
   pa_sample_spec ss;
   int latency;
@@ -20,6 +21,7 @@ struct audio_frame {
   size_t audio_length;
   bool halt;
   bool resent;
+  bool timestamped;
 };
 
 struct missing_frames {

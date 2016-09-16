@@ -28,6 +28,7 @@ struct cache_info {
   int format_change_index;
   bool halt;
   bool format_change;
+  bool timestamped;
   pa_usec_t latency_usec;
 };
 
@@ -188,6 +189,7 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
   aframe->audio_length = frame->channels * frame->bitdepth * ntohs(frame->samplecount) / 8;
   aframe->halt = frame->flags & OHM1_FLAG_HALT;
   aframe->resent = frame->flags & OHM1_FLAG_RESENT;
+  aframe->timestamped = frame->flags & OHM1_FLAG_TIMESTAMPED;
 
   if (!frame_to_sample_spec(&aframe->ss, ntohl(frame->samplerate), frame->channels, frame->bitdepth)) {
     printf("Unsupported sample spec\n");
@@ -222,7 +224,10 @@ void fixup_timestamps(struct cache *cache) {
 
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
+    int previous = cache_pos(cache, index - 1);
     struct audio_frame *frame = G.cache->frames[pos];
+    struct audio_frame *pframe = G.cache->frames[previous];
+
     if (frame == NULL)
       break;
 
@@ -231,6 +236,11 @@ void fixup_timestamps(struct cache *cache) {
 
     if (frame->ts_media < last_ts_media)
       frame->ts_media += 1ULL<<32;
+
+    if (index > 0) {
+      int64_t ts_network = latency_to_usec(frame->ss.rate, frame->ts_network);
+      pframe->net_offset = pframe->ts_recv_usec - ts_network;
+    }
 
     last_ts_network = frame->ts_network;
     last_ts_media = frame->ts_media;
@@ -281,20 +291,26 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     .halt_index = -1,
     .format_change_index = -1,
     .latency_usec = 0,
+    .timestamped = true,
   };
 
-  int64_t ts_mean = 0;
-  int64_t offset_mean = 0;
-  int64_t last_frame_ts = 0;
+  double ts_mean = 0;
+  double offset_mean = 0;
 
   int j = 0;
-  int end = cache->latest_index;
+
+  // Ignore the last frame. Its net_offset won't be ready yet.
+  // play_audio might still play it, though.
+  int end = cache->latest_index - 1;
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
-    if (G.cache->frames[pos] == NULL)
+    struct audio_frame *frame = G.cache->frames[pos];
+
+    if (frame == NULL)
       break;
 
-    struct audio_frame *frame = G.cache->frames[pos];
+    if (!frame->timestamped)
+      info.timestamped = false;
 
     if (last != NULL && !same_format(last, frame)) {
       info.format_change_index = index;
@@ -305,22 +321,17 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     info.available += frame->audio_length;
 
     if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0) {
-      // TODO calculate differences somewhere else where the order of frames is monotonic
       int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
-      int64_t ts_network = latency_to_usec(frame->ss.rate, frame->ts_network);
-      int64_t offset = last_frame_ts - ts_network;
 
-      last_frame_ts = frame->ts_recv_usec;
+      if (j > 0) {
+        double d = ts - ts_mean;
+        ts_mean += d / j;
 
-      if (j > 1) {
-        int64_t d = ts - ts_mean;
-        ts_mean += d / (j - 1);
-
-        d = offset - offset_mean;
-        offset_mean += d / (j - 1);
-      } else if (j == 1) {
+        d = frame->net_offset - offset_mean;
+        offset_mean += d / j;
+      } else {
         ts_mean = ts;
-        offset_mean = offset;
+        offset_mean = frame->net_offset;
       }
 
       j++;
@@ -340,8 +351,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   if (j == 0)
     return info;
 
-  info.start = ts_mean;
-  info.net_offset = offset_mean;
+  info.start = ts_mean + 0.5;
+  info.net_offset = offset_mean + 0.5;
 
   return info;
 }
@@ -535,21 +546,22 @@ void stop(pa_stream *s) {
 void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
-  pa_timing_info ti = *G.timing.pa;
-  int frame_size = pa_frame_size(ss);
+  if (info->timestamped) {
+    pa_timing_info ti = *G.timing.pa;
+    int frame_size = pa_frame_size(ss);
 
-  int64_t net_local_delta = info->net_offset - G.timing.initial_net_offset;
-  int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
-  int64_t local_audio_delta = ts - G.timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(G.timing.pa_offset_bytes, ss);
-  int64_t local_local_delta = ts - info->start;
-  int64_t write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
-  // TODO sind die Vorzeichen hier richtig?!
-  int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta + net_local_delta;
+    int64_t net_local_delta = info->net_offset - G.timing.initial_net_offset;
+    int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
+    int64_t local_audio_delta = ts - G.timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(G.timing.pa_offset_bytes, ss);
+    int64_t local_local_delta = ts - info->start;
+    int64_t write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
+    int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta + net_local_delta;
 
-  int total_delta_sgn = ((total_delta > 0) - (0 > total_delta));
-  int frames_delta = total_delta_sgn * ((pa_usec_to_bytes(abs(total_delta), ss) + frame_size / 2) / frame_size);
+    int total_delta_sgn = ((total_delta > 0) - (0 > total_delta));
+    int frames_delta = total_delta_sgn * ((pa_usec_to_bytes(abs(total_delta), ss) + frame_size / 2) / frame_size);
 
-  printf("Timing n-l-d: %6d usec l-a-d: %5d usec l-l-d: %6d usec w-l: %6d usec delta: %4d usec (%3d frames)\n", net_local_delta, local_audio_delta, local_local_delta, write_latency, total_delta, frames_delta);
+    printf("Timing n-l-d: %6d usec l-a-d: %5d usec l-l-d: %6d usec w-l: %6d usec delta: %4d usec (%3d frames)\n", net_local_delta, local_audio_delta, local_local_delta, write_latency, total_delta, frames_delta);
+  }
 
   size_t written = 0;
 
