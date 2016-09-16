@@ -536,11 +536,19 @@ void set_stopped(void) {
 }
 
 void stop(pa_stream *s) {
+  pthread_mutex_lock(&G.mutex);
+
+  if (G.state == STOPPING) {
+    pthread_mutex_unlock(&G.mutex);
+    return;
+  }
+
   printf("Stop: ");
   print_state(G.state);
 
   G.state = STOPPING;
   stop_stream(s, set_stopped);
+  pthread_mutex_unlock(&G.mutex);
 }
 
 void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {

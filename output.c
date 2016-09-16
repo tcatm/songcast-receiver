@@ -80,7 +80,7 @@ void output_init(struct pulse *pulse) {
   printf("Pulseaudio ready.\n");
 }
 
-void drain_cb(pa_stream *s, int success, void *data) {
+void cork_cb(pa_stream *s, int success, void *data) {
   void (*cb)(void) = data;
 
   pa_stream_disconnect(s);
@@ -92,9 +92,11 @@ void drain_cb(pa_stream *s, int success, void *data) {
 void stop_stream(pa_stream *s, void (*cb)(void)) {
   printf("Draining.\n");
 
-  pa_operation *o = pa_stream_drain(s, drain_cb, cb);
+  pa_operation *o;
+
+  o = pa_stream_cork(s, 1, cork_cb, cb);
   if (o != NULL)
     pa_operation_unref(o);
   else
-    drain_cb(s, 0, NULL);
+    cork_cb(s, 0, cb);
 }
