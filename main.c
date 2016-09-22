@@ -54,6 +54,7 @@ struct ReceiverData {
 };
 
 bool goto_uri(struct ReceiverData *receiver, const char *uri_string);
+bool goto_preset(struct ReceiverData *receiver, unsigned int preset);
 void receiver(const char *uri_string, unsigned int preset);
 void handle_ohm(int fd, uint32_t events, void *userdata);
 int open_ohz_socket(void);
@@ -552,22 +553,37 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
 
 void handle_stdin(int fd, uint32_t events, void *userdata) {
   char buf[256];
+  struct ReceiverData *receiver = userdata;
+
   char *s = fgets(buf, sizeof(buf), stdin);
   if (s == NULL)
     error(1, errno, "fgets");
 
-  printf("got: %s\n", s);
+  char *saveptr = NULL, *cmd, *arg;
 
-  // Commands need to reset preset and zone_id, set URI to OHM_NULL_URI
+  cmd = strtok_r(s, " \t\r\n", &saveptr);
+  arg = strtok_r(NULL, " \t\r\n", &saveptr);
+
+  if (strcmp(cmd, "stop") == 0)
+    goto_uri(receiver, OHM_NULL_URI);
+
+  if (strcmp(cmd, "preset") == 0 && arg != NULL)
+    goto_preset(receiver, atoi(arg));
+
+  if (strcmp(cmd, "uri") == 0 && arg != NULL)
+    goto_uri(receiver, arg);
+
+  if (strcmp(cmd, "quit") == 0)
+    exit(1);
 }
 
 bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
   if (preset == 0)
     return false;
 
-  free_uri(receiver->uri);
   free(receiver->zone_id);
   receiver->preset = preset;
+  receiver->zone_id = NULL;
 
   send_preset_query(receiver->ohz_fd, preset);
   clock_gettime(CLOCK_MONOTONIC, &receiver->last_preset_request);
