@@ -564,6 +564,9 @@ void handle_stdin(int fd, uint32_t events, void *userdata) {
   cmd = strtok_r(s, " \t\r\n", &saveptr);
   arg = strtok_r(NULL, " \t\r\n", &saveptr);
 
+  if (cmd == NULL)
+    return;
+
   if (strcmp(cmd, "stop") == 0)
     goto_uri(receiver, OHM_NULL_URI);
 
