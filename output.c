@@ -12,13 +12,36 @@ void context_state_cb(pa_context* context, void* mainloop) {
 }
 
 void stream_state_cb(pa_stream *s, void *mainloop) {
-  printf("State %i\n", pa_stream_get_state(s));
+  if (pa_stream_get_state(s) == PA_STREAM_TERMINATED)
+    set_stopped();
+
+  printf("----------------------------------------- Stream %p ", s);
+
+  switch (pa_stream_get_state(s)) {
+    case PA_STREAM_UNCONNECTED:
+      printf("UNCONNECTED\n");
+      break;
+    case PA_STREAM_CREATING:
+      printf("CREATING\n");
+      break;
+    case PA_STREAM_READY:
+      printf("READY\n");
+      break;
+    case PA_STREAM_FAILED:
+      printf("FAILED\n");
+      break;
+    case PA_STREAM_TERMINATED:
+      printf("TERMINATED\n");
+      break;
+    default:
+      printf("INVALID\n");
+  }
+
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
 void stream_underflow_cb(pa_stream *s, void *mainloop) {
   printf("Underflow\n");
-  pa_threaded_mainloop_signal(mainloop, 0);
   stop(s);
 }
 
