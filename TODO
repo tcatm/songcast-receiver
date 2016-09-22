@@ -23,6 +23,7 @@
 - [X] init/destroy for player.c (also to handle null uri)
 - [X] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [X] The time when the **previous** frame was sent over the network (if the timestamped flag is on)
+- [ ] network timestamp may not be accurate until MediaLatency after clock family change
 - [ ] fix handling of stopping stream. make it more robust. can the state cb be used?
       trigger with BUFFER_LATENCY = 3e3 or lower
       maybe unref stream in main thread?
@@ -48,4 +49,5 @@
 - [ ] CHECK_DEAD_GOTO aus simple.c übernehmen
 - [ ] if buffer runs down to 20ms, fade off?
 - [ ] fade in once buffer is 100% filled again
-- [ ] rename frame to chunk
+- [ ] implement volume control
+- [ ] implement just enough of openhome to allow grouping in kazoo. this could happen outside of the c code by controlling using stdio

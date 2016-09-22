@@ -558,12 +558,12 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
     pa_timing_info ti = *G.timing.pa;
     int frame_size = pa_frame_size(ss);
 
-    int64_t net_local_delta = info->net_offset - G.timing.initial_net_offset;
+    int64_t net_local_delta = G.timing.initial_net_offset - info->net_offset;
     int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
     int64_t local_audio_delta = ts - G.timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(G.timing.pa_offset_bytes, ss);
     int64_t local_local_delta = ts - info->start;
     int64_t write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
-    int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta + net_local_delta;
+    int64_t total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta - net_local_delta;
     int64_t recv_to_play = ts + write_latency - info->start - info->latency_usec;
 
     int total_delta_sgn = ((total_delta > 0) - (0 > total_delta));
