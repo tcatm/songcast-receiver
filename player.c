@@ -567,7 +567,7 @@ void stop(pa_stream *s) {
     return;
   }
 
-  if (G.state == STOPPING) {
+  if (G.state == STOPPING || G.state == STOPPED) {
     pthread_mutex_unlock(&G.mutex);
     return;
   }
