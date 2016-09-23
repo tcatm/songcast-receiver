@@ -342,7 +342,6 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   bool consumed = process_frame(player, aframe);
 
   if (consumed) {
-    //print_cache(player->cache);
     fixup_timestamps(player->cache);
 
     // Don't send resend requests when the frame was an answer.
@@ -377,8 +376,6 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
 
   if (index > player->cache->latest_index)
     player->cache->latest_index = index;
-
-  print_cache(player->cache);
 
   return true;
 }
