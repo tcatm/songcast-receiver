@@ -15,14 +15,37 @@
 
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 
-player_t G = {};
-
 // prototypes
-bool process_frame(struct audio_frame *frame);
-bool same_format(struct audio_frame *a, struct audio_frame *b);
-void free_frame(struct audio_frame *frame);
-void play_audio(pa_stream *s, size_t writable, struct cache_info *info);
+bool process_frame(player_t *player, struct audio_frame *frame);
+void play_audio(player_t *player, pa_stream *s, size_t writable, struct cache_info *info);
+void write_data(player_t *player, pa_stream *s, size_t request);
 
+// callbacks
+void write_cb(pa_stream *s, size_t request, void *userdata) {
+  player_t *player = userdata;
+
+  pthread_mutex_lock(&player->mutex);
+
+  write_data(player, s, request);
+
+  pthread_mutex_unlock(&player->mutex);
+}
+
+void underflow_cb(pa_stream *s, void *userdata) {
+  player_t *player = userdata;
+
+  printf("underflow is currently not handled!\n");
+  pthread_mutex_lock(&player->mutex);
+
+  // TODO branch back into main thread somehow?
+
+  pthread_mutex_unlock(&player->mutex);
+}
+
+struct output_cb callbacks = {
+  .write = write_cb,
+  .underflow = underflow_cb,
+};
 
 // functions
 uint64_t now_usec(void) {
@@ -54,42 +77,42 @@ char *print_state(enum PlayerState state) {
   }
 }
 
-void set_state(enum PlayerState *state, enum PlayerState new_state) {
-  printf("--> State change: %s to %s <--\n", print_state(*state), print_state(new_state));
-  *state = new_state;
+void set_state(player_t *player, enum PlayerState new_state) {
+  printf("--> State change: %s to %s <--\n", print_state(player->state), print_state(new_state));
+  player->state = new_state;
 }
 
 void player_init(player_t *player) {
-  set_state(&G.state, STOPPED);
-  G.cache = NULL;
-  output_init(&G.pulse);
+  set_state(player, STOPPED);
+  player->cache = NULL;
+  output_init(&player->pulse);
 }
 
 void player_stop(player_t *player) {
-  pthread_mutex_lock(&G.mutex);
+  pthread_mutex_lock(&player->mutex);
 
-  if (G.cache != NULL)
-    discard_cache_through(G.cache, G.cache->latest_index);
+  if (player->cache != NULL)
+    discard_cache_through(player->cache, player->cache->latest_index);
 
-  free(G.cache);
+  free(player->cache);
 
-  set_state(&G.state, STOPPED);
-  G.cache = NULL;
-  pthread_mutex_unlock(&G.mutex);
+  set_state(player, STOPPED);
+  player->cache = NULL;
+  pthread_mutex_unlock(&player->mutex);
 }
 
-void try_prepare(void) {
-  struct audio_frame *start = G.cache->frames[cache_pos(G.cache, 0)];
+void try_prepare(player_t *player) {
+  struct audio_frame *start = player->cache->frames[cache_pos(player->cache, 0)];
 
   if (start == NULL)
     return;
 
   printf("Preparing stream.\n");
 
-  assert(G.state == STOPPED);
+  assert(player->state == STOPPED);
 
-  set_state(&G.state, STARTING);
-  G.timing = (struct timing){};
+  set_state(player, STARTING);
+  player->timing = (struct timing){};
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -98,39 +121,37 @@ void try_prepare(void) {
     .tlength = pa_usec_to_bytes(BUFFER_LATENCY, &start->ss),
   };
 
-  create_stream(&G.pulse, &start->ss, &bufattr);
+  create_stream(&player->pulse, &start->ss, &bufattr, player, &callbacks);
 
   printf("Stream prepared\n");
 }
 
-void write_data(pa_stream *s, size_t request) {
-  pthread_mutex_lock(&G.mutex);
-
-  if (G.state == STOPPED || G.cache == NULL) {
-    pthread_mutex_unlock(&G.mutex);
+// TODO wants player. is it really needed? cache is used. timing is used.
+// TODO what pre-conditions need to be met? cache must be present, stream is required
+void write_data(player_t *player, pa_stream *s, size_t request) {
+  if (player->state == STOPPED || player->cache == NULL)
     return;
-  }
 
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
-  if (G.timing.pa == NULL)
-    G.timing.pa = pa_stream_get_timing_info(s);
+  if (player->timing.pa == NULL)
+    player->timing.pa = pa_stream_get_timing_info(s);
 
-  pa_operation *o = pa_stream_update_timing_info(G.pulse.stream, NULL, NULL);
+  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
 
   if (o != NULL)
     pa_operation_unref(o);
 
-  struct cache_info info = cache_continuous_size(G.cache);
+  struct cache_info info = cache_continuous_size(player->cache);
 
-  switch (G.state) {
+  switch (player->state) {
     case PLAYING:
       break;
     case STARTING:
-      if (G.timing.pa == NULL)
+      if (player->timing.pa == NULL)
         goto silence;
 
-      if (G.timing.pa->playing == 0)
+      if (player->timing.pa->playing == 0)
         goto silence;
 
       // Can't start playing when we don't have a timestamp
@@ -140,15 +161,15 @@ void write_data(pa_stream *s, size_t request) {
       // Determine whether we have enough data to start playing right away.
       int64_t start_at = info.start + info.latency_usec;
 
-      uint64_t ts = (uint64_t)G.timing.pa->timestamp.tv_sec * 1000000 + G.timing.pa->timestamp.tv_usec;
-      uint64_t playback_latency = G.timing.pa->sink_usec + G.timing.pa->transport_usec +
-                                  pa_bytes_to_usec(G.timing.pa->write_index - G.timing.pa->read_index, ss);
+      uint64_t ts = (uint64_t)player->timing.pa->timestamp.tv_sec * 1000000 + player->timing.pa->timestamp.tv_usec;
+      uint64_t playback_latency = player->timing.pa->sink_usec + player->timing.pa->transport_usec +
+                                  pa_bytes_to_usec(player->timing.pa->write_index - player->timing.pa->read_index, ss);
 
       uint64_t play_at = ts + playback_latency;
 
       int64_t delta = play_at - start_at;
 
-      printf("Request for %zd bytes (playing = %i), can start at %ld, would play at %ld, in %ld usec\n", request, G.timing.pa->playing, start_at, play_at, delta);
+      printf("Request for %zd bytes (playing = %i), can start at %ld, would play at %ld, in %ld usec\n", request, player->timing.pa->playing, start_at, play_at, delta);
 
       if (delta < 0)
         goto silence;
@@ -164,32 +185,31 @@ void write_data(pa_stream *s, size_t request) {
 
       printf("Request can be fullfilled.\n");
 
-      trim_cache(G.cache, skip);
+      trim_cache(player->cache, skip);
 
       // Adjust cache info
       info.start += delta;
       info.available -= skip;
 
       // Prepare timing information
-      G.timing.start_local_usec = play_at;
-      G.timing.initial_net_offset = info.net_offset;
-      G.timing.pa_offset_bytes = G.timing.pa->write_index;
+      player->timing.start_local_usec = play_at;
+      player->timing.initial_net_offset = info.net_offset;
+      player->timing.pa_offset_bytes = player->timing.pa->write_index;
 
-      set_state(&G.state, PLAYING);
+      set_state(player, PLAYING);
       break;
     case STOPPED:
     case STOPPING:
     case HALT:
     default:
-      pthread_mutex_unlock(&G.mutex);
+      pthread_mutex_unlock(&player->mutex);
       return;
       break;
   }
 
-  play_audio(s, request, &info);
-  G.timing.written += request;
+  play_audio(player, s, request, &info);
+  player->timing.written += request;
 
-  pthread_mutex_unlock(&G.mutex);
   return;
 
 uint8_t *silence;
@@ -198,42 +218,18 @@ silence:
   silence = calloc(1, request);
   pa_stream_write(s, silence, request, NULL, 0, PA_SEEK_RELATIVE);
   free(silence);
-
-  pthread_mutex_unlock(&G.mutex);
 }
 
-void set_stopped(void) {
-  if (G.state != STOPPING) {
-    return;
-  }
-  set_state(&G.state, STOPPED);
-  printf("Playback stopped.\n");
-}
-
-void stop(pa_stream *s) {
-  printf("stop()\n");
-  pthread_mutex_lock(&G.mutex);
-
-  if (G.state == STOPPING || G.state == STOPPED) {
-    pthread_mutex_unlock(&G.mutex);
-    return;
-  }
-
-  set_state(&G.state, STOPPING);
-  stop_stream(s, set_stopped);
-  pthread_mutex_unlock(&G.mutex);
-}
-
-void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
+void play_audio(player_t *player, pa_stream *s,size_t writable, struct cache_info *info) {
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
   if (info->timestamped) {
-    pa_timing_info ti = *G.timing.pa;
+    pa_timing_info ti = *player->timing.pa;
     int frame_size = pa_frame_size(ss);
 
-    int net_local_delta = G.timing.initial_net_offset - info->net_offset;
+    int net_local_delta = player->timing.initial_net_offset - info->net_offset;
     int64_t ts = ti.timestamp.tv_sec * 1000000ULL + ti.timestamp.tv_usec;
-    int local_audio_delta = ts - G.timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(G.timing.pa_offset_bytes, ss);
+    int local_audio_delta = ts - player->timing.start_local_usec - pa_bytes_to_usec(ti.read_index, ss) + pa_bytes_to_usec(player->timing.pa_offset_bytes, ss);
     int local_local_delta = ts - info->start;
     int write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
     int total_delta = local_local_delta + write_latency - info->latency_usec - local_audio_delta - net_local_delta;
@@ -254,14 +250,13 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
 //         info.available, available_usec);
 
   while (writable > 0) {
-    int pos = cache_pos(G.cache, 0);
+    int pos = cache_pos(player->cache, 0);
+    struct audio_frame *frame = player->cache->frames[pos];
 
-    if (G.cache->frames[pos] == NULL) {
+    if (frame == NULL) {
       printf("Missing frame.\n");
       break;
     }
-
-    struct audio_frame *frame = G.cache->frames[pos];
 
     if (!pa_sample_spec_equal(ss, &frame->ss)) {
       printf("Sample spec mismatch.\n");
@@ -288,14 +283,14 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
       bool halt = frame->halt;
 
       free_frame(frame);
-      G.cache->frames[pos] = NULL;
-      G.cache->offset++;
-      G.cache->start_seqnum++;
-      G.cache->latest_index--;
+      player->cache->frames[pos] = NULL;
+      player->cache->offset++;
+      player->cache->start_seqnum++;
+      player->cache->latest_index--;
 
       if (halt) {
         printf("HALT received.\n");
-        set_state(&G.state, HALT);
+        set_state(player, HALT);
         return;
       }
     }
@@ -303,7 +298,7 @@ void play_audio(pa_stream *s,size_t writable, struct cache_info *info) {
 
   if (writable > 0) {
     printf("Not enough data. Stopping.\n");
-    set_state(&G.state, HALT);
+    set_state(player, HALT);
     return;
   }
 
@@ -322,42 +317,42 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   aframe->ts_recv_usec = (long long)ts->tv_sec * 1000000 + (ts->tv_nsec + 500) / 1000;
   aframe->ts_due_usec = latency_to_usec(aframe->ss.rate, aframe->latency) + aframe->ts_recv_usec;
 
-  pthread_mutex_lock(&G.mutex);
-  if (G.cache != NULL)
-    remove_old_frames(G.cache, now);
+  pthread_mutex_lock(&player->mutex);
+  if (player->cache != NULL)
+    remove_old_frames(player->cache, now);
 
-  bool consumed = process_frame(aframe);
+  bool consumed = process_frame(player, aframe);
 
   if (!consumed)
     free_frame(aframe);
 
-  if (G.cache != NULL)
-    fixup_timestamps(G.cache);
+  if (player->cache != NULL)
+    fixup_timestamps(player->cache);
 
-  if (G.cache != NULL && G.state == STOPPED) {
-    print_cache(G.cache);
-    try_prepare();
+  if (player->cache != NULL && player->state == STOPPED) {
+    print_cache(player->cache);
+    try_prepare(player);
   }
 
-  pthread_mutex_unlock(&G.mutex);
+  pthread_mutex_unlock(&player->mutex);
 
   // Don't send resend requests when the frame was an answer.
-  if (!aframe->resent && G.cache != NULL)
-    return request_frames(G.cache);
+  if (!aframe->resent && player->cache != NULL)
+    return request_frames(player->cache);
 
   return NULL;
 }
 
-bool process_frame(struct audio_frame *frame) {
-  if (G.cache == NULL) {
+bool process_frame(player_t *player, struct audio_frame *frame) {
+  if (player->cache == NULL) {
     if (frame->resent)
       return false;
 
-    G.cache = calloc(1, sizeof(struct cache));
-    assert(G.cache != NULL);
+    player->cache = calloc(1, sizeof(struct cache));
+    assert(player->cache != NULL);
 
     printf("start receiving\n");
-    G.cache->size = CACHE_SIZE;
+    player->cache->size = CACHE_SIZE;
     goto reset_cache;
   }
 
@@ -365,29 +360,29 @@ bool process_frame(struct audio_frame *frame) {
   // Only the output thread can change start_seqnum after
   // the cache has been created.
 
-  if (frame->seqnum - G.cache->start_seqnum >= G.cache->size) {
-    discard_cache_through(G.cache, G.cache->latest_index);
+  if (frame->seqnum - player->cache->start_seqnum >= player->cache->size) {
+    discard_cache_through(player->cache, player->cache->latest_index);
     printf("clean\n");
   reset_cache:
-    G.cache->latest_index = 0;
-    G.cache->start_seqnum = frame->seqnum;
-    G.cache->offset = 0;
+    player->cache->latest_index = 0;
+    player->cache->start_seqnum = frame->seqnum;
+    player->cache->offset = 0;
   }
 
-  int index = frame->seqnum - G.cache->start_seqnum;
-  int pos = cache_pos(G.cache, index);
+  int index = frame->seqnum - player->cache->start_seqnum;
+  int pos = cache_pos(player->cache, index);
   if (index < 0)
     return false;
 
 //  printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
 
-  if (G.cache->frames[pos] != NULL)
+  if (player->cache->frames[pos] != NULL)
     return false;
 
-  G.cache->frames[pos] = frame;
+  player->cache->frames[pos] = frame;
 
-  if (index > G.cache->latest_index)
-    G.cache->latest_index = index;
+  if (index > player->cache->latest_index)
+    player->cache->latest_index = index;
 
   return true;
 }

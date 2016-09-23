@@ -23,7 +23,15 @@
 - [X] init/destroy for player.c (also to handle null uri)
 - [X] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [X] The time when the **previous** frame was sent over the network (if the timestamped flag is on)
-- [ ] remove global G
+- [X] remove global G
+- [X] struct for request and underflow cb
+- [ ] tear down of stream could happen in try_prepare or player_stop
+      which events are used?
+      - write_data
+      - underflow
+- [ ] make cache a little more opaque?
+- [ ] what is the data flow for cache? what does the mutex prevent?
+      need at least a mutex for the cache
 - [ ] decouple output from player using opaque pointer
 - [ ] under what conditions should the cache be removed?
 - [ ] get rid of int64_t wherever possible

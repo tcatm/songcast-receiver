@@ -4,18 +4,12 @@
 
 #include "output.h"
 
-extern void write_data(pa_stream *s, size_t size);
-extern void stop(pa_stream *s);
-extern void set_stopped(void);
 
 void context_state_cb(pa_context* context, void* mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
 void stream_state_cb(pa_stream *s, void *mainloop) {
-  if (pa_stream_get_state(s) == PA_STREAM_TERMINATED)
-    set_stopped();
-
   printf("----------------------------------------- Stream %p ", s);
 
   switch (pa_stream_get_state(s)) {
@@ -41,26 +35,14 @@ void stream_state_cb(pa_stream *s, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void stream_underflow_cb(pa_stream *s, void *mainloop) {
-  printf("Underflow\n");
-  stop(s);
-}
-
-void stream_request_cb(pa_stream *s, size_t size, void *mainloop) {
-  pa_stream_ref(s);
-  write_data(s, size);
-  pa_stream_unref(s);
-  pa_threaded_mainloop_signal(mainloop, 0);
-}
-
-void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr *bufattr) {
+void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr *bufattr, void *userdata, struct output_cb *callbacks) {
   pa_channel_map map;
   assert(pa_channel_map_init_auto(&map, ss->channels, PA_CHANNEL_MAP_DEFAULT));
 
   pulse->stream = pa_stream_new(pulse->context, "Songcast Receiver", ss, &map);
   pa_stream_set_state_callback(pulse->stream, stream_state_cb, pulse->mainloop);
-  pa_stream_set_write_callback(pulse->stream, stream_request_cb, pulse->mainloop);
-  pa_stream_set_underflow_callback(pulse->stream, stream_underflow_cb, pulse->mainloop);
+  pa_stream_set_write_callback(pulse->stream, callbacks->write, userdata);
+  pa_stream_set_underflow_callback(pulse->stream, callbacks->underflow, userdata);
 
   char format[PA_SAMPLE_SPEC_SNPRINT_MAX];
   pa_sample_spec_snprint(format, sizeof(format), ss);
