@@ -25,7 +25,7 @@ void cache_reset(struct cache *cache) {
     struct audio_frame *frame = cache->frames[index];
     if (frame != NULL) {
       free_frame(frame);
-      frame = NULL;
+      cache->frames[index] = NULL;
     }
   }
 
