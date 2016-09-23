@@ -7,7 +7,6 @@
 
 struct audio_frame {
   uint64_t ts_recv_usec;
-  uint64_t ts_due_usec;
   uint64_t ts_network;
   uint64_t ts_media;
   uint64_t net_offset;

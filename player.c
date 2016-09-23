@@ -337,7 +337,6 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
 
   // TODO incorporate any network latencies and such into ts_due_usec
   aframe->ts_recv_usec = (long long)ts->tv_sec * 1000000 + (ts->tv_nsec + 500) / 1000;
-  aframe->ts_due_usec = latency_to_usec(aframe->ss.rate, aframe->latency) + aframe->ts_recv_usec;
 
   pthread_mutex_lock(&player->mutex);
 
