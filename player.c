@@ -305,7 +305,8 @@ void play_audio(player_t *player, pa_stream *s,size_t writable, struct cache_inf
       player->cache->frames[pos] = NULL;
       player->cache->offset++;
       player->cache->start_seqnum++;
-      player->cache->latest_index--;
+      if (player->cache->latest_index > 0)
+        player->cache->latest_index--;
 
       if (halt) {
         printf("HALT received.\n");
