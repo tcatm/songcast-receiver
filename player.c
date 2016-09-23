@@ -15,6 +15,7 @@
 
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 // TODO determine BUFFER_LATENCY automagically
+#define CACHE_SIZE 2000 // frames
 #define BUFFER_LATENCY 60e3 // 60ms buffer latency
 
 // prototypes
@@ -95,7 +96,7 @@ void player_init(player_t *player) {
   pthread_mutex_init(&player->mutex, NULL);
 
   set_state(player, STOPPED);
-  player->cache = NULL;
+  player->cache = cache_init(CACHE_SIZE);
   output_init(&player->pulse);
 }
 
@@ -106,12 +107,7 @@ void player_stop(player_t *player) {
   if (player->state != STOPPED)
     stop(player);
 
-  if (player->cache != NULL)
-    discard_cache_through(player->cache, player->cache->latest_index);
-
-  free(player->cache);
-
-  player->cache = NULL;
+  cache_reset(player->cache);
 
   set_state(player, STOPPED);
 
@@ -153,7 +149,7 @@ void try_prepare(player_t *player) {
 // TODO wants player. is it really needed? cache is used. timing is used.
 // TODO what pre-conditions need to be met? cache must be present, stream is required
 void write_data(player_t *player, pa_stream *s, size_t request) {
-  if (player->state == STOPPED || player->cache == NULL)
+  if (player->state == STOPPED)
     return;
 
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
@@ -364,24 +360,7 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
 }
 
 bool process_frame(player_t *player, struct audio_frame *frame) {
-  if (player->cache == NULL) {
-    if (frame->resent)
-      return false;
-
-    player->cache = calloc(1, sizeof(struct cache));
-    assert(player->cache != NULL);
-
-    printf("start receiving\n");
-    player->cache->size = CACHE_SIZE;
-    player->cache->latest_index = 0;
-    player->cache->start_seqnum = frame->seqnum;
-    player->cache->offset = 0;
-  }
-
-  int overflow = frame->seqnum - player->cache->start_seqnum - player->cache->size;
-
-  if (overflow > 0)
-    discard_cache_through(player->cache, overflow);
+  cache_seek_forward(player->cache, frame->seqnum);
 
   // The index stays fixed while this function runs.
   int index = frame->seqnum - player->cache->start_seqnum;
@@ -389,7 +368,7 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   if (index < 0)
     return false;
 
-//  printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
+  //printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
 
   if (player->cache->frames[pos] != NULL)
     return false;
@@ -398,6 +377,8 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
 
   if (index > player->cache->latest_index)
     player->cache->latest_index = index;
+
+  print_cache(player->cache);
 
   return true;
 }

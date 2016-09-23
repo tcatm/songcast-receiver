@@ -5,6 +5,33 @@ int cache_pos(struct cache *cache, int index) {
   return (index + cache->offset) % cache->size;
 }
 
+struct cache *cache_init(unsigned int size) {
+  struct cache *cache = calloc(1, sizeof(struct cache) + sizeof(struct audio_frame*) * size);
+  assert(cache != NULL);
+
+  cache->size = size;
+
+  cache_reset(cache);
+
+  printf("Cache initialized\n");
+
+  return cache;
+}
+
+void cache_reset(struct cache *cache) {
+  int end = cache->size;
+  for (int index = 0; index < end; index++) {
+    struct audio_frame *frame = cache->frames[index];
+    if (frame != NULL) {
+      free_frame(frame);
+      frame = NULL;
+    }
+  }
+
+  cache->latest_index = 0;
+  cache->start_seqnum = 0;
+  cache->offset = 0;
+}
 
 void print_cache(struct cache *cache) {
   assert(cache != NULL);
@@ -214,12 +241,17 @@ struct missing_frames *request_frames(struct cache *cache) {
   return d;
 }
 
-void discard_cache_through(struct cache *cache, int discard) {
+// Adjusts cache such that the seqnum will fit within the cache, possibly
+// at the end.
+void cache_seek_forward(struct cache *cache, unsigned int seqnum) {
   assert(cache != NULL);
-  assert(discard < cache->size);
 
-  if (discard < 0)
+  if (seqnum < cache->start_seqnum + cache->size)
     return;
+
+  int offset = seqnum - cache->start_seqnum - cache->size;
+
+  int discard = offset < cache->latest_index ? offset : cache->latest_index;
 
   for (int index = 0; index <= discard; index++) {
     int pos = cache_pos(cache, index);
@@ -230,7 +262,14 @@ void discard_cache_through(struct cache *cache, int discard) {
     }
   }
 
-  cache->offset += discard + 1;
-  cache->start_seqnum += discard + 1;
-  cache->latest_index -= discard + 1;
+  if (offset >= cache->latest_index) {
+    cache->offset = 0;
+    cache->start_seqnum = seqnum;
+    cache->latest_index = 0;
+  } else {
+    cache->offset += offset + 1;
+    cache->start_seqnum += offset + 1;
+    cache->latest_index -= offset + 1;
+  }
+
 }

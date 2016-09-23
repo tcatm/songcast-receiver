@@ -6,8 +6,6 @@
 #include <assert.h>
 #include <stdio.h>
 
-#define CACHE_SIZE 2000 // frames
-
 struct cache_info {
   size_t available;
   int64_t start;
@@ -21,11 +19,11 @@ struct cache_info {
 };
 
 struct cache {
-  int start_seqnum;
+  unsigned int start_seqnum;
   int latest_index;
   int size;
   unsigned int offset;
-  struct audio_frame *frames[CACHE_SIZE];
+  struct audio_frame *frames[];
 };
 
 struct missing_frames {
@@ -33,9 +31,11 @@ struct missing_frames {
   unsigned int seqnums[];
 };
 
+struct cache *cache_init(unsigned int size);
+void cache_reset(struct cache *cache);
 void print_cache(struct cache *cache);
 struct cache_info cache_continuous_size(struct cache *cache);
-void discard_cache_through(struct cache *cache, int discard);
+void cache_seek_forward(struct cache *cache, unsigned int seqnum);
 int cache_pos(struct cache *cache, int index);
 bool trim_cache(struct cache *cache, size_t trim);
 void fixup_timestamps(struct cache *cache);
