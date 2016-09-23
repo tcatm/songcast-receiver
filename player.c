@@ -384,6 +384,8 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   // Only the output thread can change start_seqnum after
   // the cache has been created.
 
+  // TODO calculate how much to discard, i.e. just enough so this frame can be appended
+  // TODO get rid of remove_old_frames
   if (frame->seqnum - player->cache->start_seqnum >= player->cache->size) {
     discard_cache_through(player->cache, player->cache->latest_index);
     printf("clean\n");
