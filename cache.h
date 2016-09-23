@@ -10,11 +10,16 @@ struct cache_info {
   size_t available;
   int64_t start;
   int64_t net_offset;
+  double start_error;
+  double net_offset_error;
+  double clock_ratio;
+  double clock_ratio_error;
   int halt_index;
   int format_change_index;
   bool halt;
   bool format_change;
   bool timestamped;
+  bool has_timing;
   int latency_usec;
 };
 

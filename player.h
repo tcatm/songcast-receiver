@@ -7,6 +7,7 @@
 #include "output.h"
 #include "cache.h"
 #include "audio_frame.h"
+#include "kalman.h"
 
 enum PlayerState {STOPPED, STARTING, PLAYING, HALT};
 /*
@@ -26,10 +27,13 @@ enum PlayerState {STOPPED, STARTING, PLAYING, HALT};
 struct timing {
   const pa_timing_info *pa;
   int64_t start_local_usec;
-  int64_t initial_net_offset;
   int64_t last_frame_ts;
   size_t pa_offset_bytes;
   size_t written;
+  kalman_t kalman_netlocal_ratio;
+  kalman_t kalman_rtp;
+  kalman_t kalman_rate;
+  pa_sample_spec ss;
 };
 
 typedef struct {
