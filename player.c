@@ -335,8 +335,6 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   if (aframe == NULL)
     return NULL;
 
-  uint64_t now = now_usec();
-
   // TODO incorporate any network latencies and such into ts_due_usec
   aframe->ts_recv_usec = (long long)ts->tv_sec * 1000000 + (ts->tv_nsec + 500) / 1000;
   aframe->ts_due_usec = latency_to_usec(aframe->ss.rate, aframe->latency) + aframe->ts_recv_usec;
@@ -349,8 +347,7 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   bool consumed = process_frame(player, aframe);
 
   if (consumed) {
-    // TODO can we get rid of this?
-    remove_old_frames(player->cache, now);
+    //print_cache(player->cache);
     fixup_timestamps(player->cache);
 
     // Don't send resend requests when the frame was an answer.
@@ -377,24 +374,17 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
 
     printf("start receiving\n");
     player->cache->size = CACHE_SIZE;
-    goto reset_cache;
-  }
-
-  // The index stays fixed while this function runs.
-  // Only the output thread can change start_seqnum after
-  // the cache has been created.
-
-  // TODO calculate how much to discard, i.e. just enough so this frame can be appended
-  // TODO get rid of remove_old_frames
-  if (frame->seqnum - player->cache->start_seqnum >= player->cache->size) {
-    discard_cache_through(player->cache, player->cache->latest_index);
-    printf("clean\n");
-  reset_cache:
     player->cache->latest_index = 0;
     player->cache->start_seqnum = frame->seqnum;
     player->cache->offset = 0;
   }
 
+  int overflow = frame->seqnum - player->cache->start_seqnum - player->cache->size;
+
+  if (overflow > 0)
+    discard_cache_through(player->cache, overflow);
+
+  // The index stays fixed while this function runs.
   int index = frame->seqnum - player->cache->start_seqnum;
   int pos = cache_pos(player->cache, index);
   if (index < 0)

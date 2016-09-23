@@ -236,23 +236,3 @@ void discard_cache_through(struct cache *cache, int discard) {
   cache->start_seqnum += discard + 1;
   cache->latest_index -= discard + 1;
 }
-
-void remove_old_frames(struct cache *cache, uint64_t now_usec) {
-  assert(cache != NULL);
-
-  int discard = -1;
-
-  int end = cache->latest_index;
-  for (int index = 0; index <= end; index++) {
-    int pos = cache_pos(cache, index);
-    if (cache->frames[pos] == NULL)
-      continue;
-
-    if (cache->frames[pos]->ts_due_usec < now_usec)
-      discard = index;
-    else
-      break;
-  }
-
-  discard_cache_through(cache, discard);
-}
