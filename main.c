@@ -603,10 +603,8 @@ bool goto_uri(struct ReceiverData *receiver, const char *uri_string) {
   if (strcmp(uri->scheme, "ohz") == 0) {
     printf("Got zone %s\n", uri->path);
     free(receiver->zone_id);
-    free_uri(receiver->uri);
     receiver->preset = 0;
     receiver->zone_id = strdup(uri->path);
-    receiver->uri = NULL;
     send_zone_query(receiver->ohz_fd, uri->path);
     clock_gettime(CLOCK_MONOTONIC, &receiver->last_zone_request);
     // This will not stop playback.
