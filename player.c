@@ -104,12 +104,12 @@ void player_init(player_t *player) {
 void player_stop(player_t *player) {
   pthread_mutex_lock(&player->mutex);
 
-  if (player->state != STOPPED)
+  if (player->state != STOPPED) {
     stop(player);
+    set_state(player, STOPPED);
+  }
 
   cache_reset(player->cache);
-
-  set_state(player, STOPPED);
 
   pthread_mutex_unlock(&player->mutex);
 }

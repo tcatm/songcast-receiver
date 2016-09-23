@@ -20,8 +20,8 @@ struct cache_info {
 
 struct cache {
   unsigned int start_seqnum;
-  int latest_index;
-  int size;
+  unsigned int latest_index;
+  unsigned int size;
   unsigned int offset;
   struct audio_frame *frames[];
 };

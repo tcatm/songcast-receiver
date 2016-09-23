@@ -76,6 +76,8 @@ char *parse_preset_metadata(char *data, size_t length) {
   result = xmlXPathEvalExpression((unsigned char*)"//*[local-name()='res']/text()", context);
   xmlXPathFreeContext(context);
   if (result == NULL || xmlXPathNodeSetIsEmpty(result->nodesetval)) {
+    xmlXPathFreeObject(result);
+    xmlFreeDoc(metadata);
     xmlCleanupParser();
     fprintf(stderr, "Could not find URI in metadata\n");
     return NULL;
@@ -84,6 +86,8 @@ char *parse_preset_metadata(char *data, size_t length) {
   xmlChar *uri = xmlXPathCastToString(result);
   char *s = strdup((char *)uri);
   xmlFree(uri);
+  xmlXPathFreeObject(result);
+  xmlFreeDoc(metadata);
   xmlCleanupParser();
 
   return s;

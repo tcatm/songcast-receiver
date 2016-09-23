@@ -10,8 +10,9 @@ struct cache *cache_init(unsigned int size) {
   assert(cache != NULL);
 
   cache->size = size;
-
-  cache_reset(cache);
+  cache->latest_index = 0;
+  cache->start_seqnum = 0;
+  cache->offset = 0;
 
   printf("Cache initialized\n");
 
@@ -31,6 +32,8 @@ void cache_reset(struct cache *cache) {
   cache->latest_index = 0;
   cache->start_seqnum = 0;
   cache->offset = 0;
+
+  printf("Cache reset\n");
 }
 
 void print_cache(struct cache *cache) {

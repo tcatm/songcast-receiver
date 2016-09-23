@@ -40,7 +40,7 @@ bool frame_to_sample_spec(pa_sample_spec *ss, int rate, int channels, int bitdep
 }
 
 struct audio_frame *parse_frame(ohm1_audio *frame) {
-  struct audio_frame *aframe = malloc(sizeof(struct audio_frame));
+  struct audio_frame *aframe = calloc(1, sizeof(struct audio_frame));
 
   if (aframe == NULL)
     return NULL;
