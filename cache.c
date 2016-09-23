@@ -72,8 +72,6 @@ void fixup_timestamps(struct cache *cache) {
   }
 }
 
-
-
 struct cache_info cache_continuous_size(struct cache *cache) {
   assert(cache != NULL);
 
@@ -160,13 +158,13 @@ bool trim_cache(struct cache *cache, size_t trim) {
   if (trim == 0)
     return true;
 
+  printf("Trimming %zd bytes\n", trim);
+
   int end = cache->latest_index;
   int adjust = 0;
   for (int index = 0; index <= end && trim > 0; index++) {
     int pos = cache_pos(cache, index);
     struct audio_frame *frame = cache->frames[pos];
-
-    printf("Trimming %zd bytes\n", trim);
 
     if (frame == NULL)
       break;
