@@ -51,6 +51,8 @@ struct ReceiverData {
   int slave_count;
   struct sockaddr_in *my_slaves;
   struct handler ohm_handler;
+
+  player_t player;
 };
 
 bool goto_uri(struct ReceiverData *receiver, const char *uri_string);
@@ -71,7 +73,7 @@ char *parse_preset_metadata(char *data, size_t length) {
   xmlXPathObjectPtr result;
 
   context = xmlXPathNewContext(metadata);
-  result = xmlXPathEvalExpression("//*[local-name()='res']/text()", context);
+  result = xmlXPathEvalExpression((unsigned char*)"//*[local-name()='res']/text()", context);
   xmlXPathFreeContext(context);
   if (result == NULL || xmlXPathNodeSetIsEmpty(result->nodesetval)) {
     xmlCleanupParser();
@@ -80,7 +82,7 @@ char *parse_preset_metadata(char *data, size_t length) {
   }
 
   xmlChar *uri = xmlXPathCastToString(result);
-  char *s = strdup(uri);
+  char *s = strdup((char *)uri);
   xmlFree(uri);
   xmlCleanupParser();
 
@@ -130,9 +132,9 @@ int open_ohz_socket(void) {
   if (bind(fd, (struct sockaddr *) &src, sizeof(src)) < 0)
     error(1, 0, "Could not bind socket");
 
-  struct ip_mreq mreq = {
+  struct ip_mreq mreq = {{
     mreq.imr_multiaddr.s_addr = inet_addr("239.255.255.250")
-  };
+  }};
 
   if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
     error(1, 0, "Could not join multicast group");
@@ -199,9 +201,6 @@ void send_zone_query(int fd, const char *zone) {
     .zone_length = htonl(strlen(zone))
   };
 
-  size_t query_size = sizeof(ohz1_zone_query) + strlen(zone);
-  uint8_t *query_with_id = malloc(query_size);
-
   struct iovec iov[] = {
     {
       .iov_base = &query,
@@ -265,7 +264,7 @@ void handle_ohz(int fd, uint32_t events, void *userdata) {
 
   ohz1_header *hdr = (void *)buf;
 
-  if (strncmp(hdr->signature, "Ohz ", 4) != 0)
+  if (strncmp((char *)hdr->signature, "Ohz ", 4) != 0)
     return;
 
   if (hdr->version != 1)
@@ -313,9 +312,9 @@ int open_ohm_socket(const char *host, unsigned int port, bool unicast) {
     if (bind(fd, (struct sockaddr *) &src, sizeof(src)) < 0)
       error(1, 0, "Could not bind socket");
 
-    struct ip_mreq mreq = {
+    struct ip_mreq mreq = {{
       mreq.imr_multiaddr.s_addr = inet_addr(host)
-    };
+    }};
 
     if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
       error(1, 0, "Could not join multicast group");
@@ -383,7 +382,7 @@ void dump_metatext(ohm1_metatext *meta) {
 
 void update_slaves(struct ReceiverData *receiver, ohm1_slave *slave) {
   receiver->slave_count = htonl(slave->count);
-  printf("Updating slaves: %zi\n", receiver->slave_count);
+  printf("Updating slaves: %d\n", receiver->slave_count);
   free(receiver->my_slaves);
 
   receiver->my_slaves = calloc(receiver->slave_count, sizeof(struct sockaddr_in));
@@ -418,7 +417,7 @@ void stop_playback(struct ReceiverData *receiver) {
   receiver->my_slaves = NULL;
   receiver->ohm_fd = 0;
 
-  player_stop();
+  player_stop(&receiver->player);
 }
 
 void play_uri(struct ReceiverData *receiver) {
@@ -494,7 +493,7 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
 
   ohm1_header *hdr = (void *)buf;
 
-  if (strncmp(hdr->signature, "Ohm ", 4) != 0)
+  if (strncmp((char *)hdr->signature, "Ohm ", 4) != 0)
     return;
 
   if (hdr->version != 1)
@@ -525,7 +524,7 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
         clock_gettime(CLOCK_MONOTONIC, &receiver->last_listen);
       break;
     case OHM1_AUDIO:
-      missing = handle_frame((void*)buf, &ts_recv);
+      missing = handle_frame(&receiver->player, (void*)buf, &ts_recv);
 
       if (missing)
         ohm_send_resend_request(receiver->ohm_fd, receiver->uri, missing);
@@ -590,6 +589,8 @@ bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
 
   send_preset_query(receiver->ohz_fd, preset);
   clock_gettime(CLOCK_MONOTONIC, &receiver->last_preset_request);
+
+  return true;
 }
 
 bool goto_uri(struct ReceiverData *receiver, const char *uri_string) {
@@ -638,8 +639,10 @@ void receiver(const char *uri_string, unsigned int preset) {
     .preset = 0,
     .zone_id = NULL,
     .uri = NULL,
-    .my_slaves = NULL,
+    .my_slaves = NULL
   };
+
+  player_init(&receiver.player);
 
   int maxevents = 64;
   struct epoll_event events[maxevents];
@@ -766,7 +769,6 @@ int main(int argc, char *argv[]) {
   if (uri != NULL && preset != 0)
     error(1, 0, "Can not specify both preset and URI!");
 
-  player_init();
   receiver(uri, preset);
   free(uri);
 }

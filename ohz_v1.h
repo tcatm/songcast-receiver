@@ -25,7 +25,7 @@ typedef struct __attribute__((__packed__))  {
   ohz1_header hdr;
   uint32_t zone_length;
   uint32_t uri_length;
-  uint8_t data[];
+  char data[];
 } ohz1_zone_uri;
 
 typedef struct __attribute__((__packed__)) {
@@ -37,5 +37,5 @@ typedef struct __attribute__((__packed__)) {
   ohz1_header hdr;
   uint32_t preset;
   uint32_t length;
-  uint8_t metadata[];
+  char metadata[];
 } ohz1_preset_info;

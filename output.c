@@ -6,6 +6,7 @@
 
 extern void write_data(pa_stream *s, size_t size);
 extern void stop(pa_stream *s);
+extern void set_stopped(void);
 
 void context_state_cb(pa_context* context, void* mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);

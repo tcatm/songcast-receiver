@@ -35,7 +35,7 @@ struct uri *parse_uri(const char *uri_string) {
 }
 
 void free_uri(struct uri *uri) {
-  if (uri == NULL);
+  if (uri == NULL)
     return;
 
   free(uri->scheme);

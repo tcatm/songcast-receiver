@@ -23,6 +23,11 @@
 - [X] init/destroy for player.c (also to handle null uri)
 - [X] handle OHM null URL. could be tested with rebooted DSM. it should send null URL first, then transition to real URI later
 - [X] The time when the **previous** frame was sent over the network (if the timestamped flag is on)
+- [ ] remove global G
+- [ ] decouple output from player using opaque pointer
+- [ ] under what conditions should the cache be removed?
+- [ ] get rid of int64_t wherever possible
+- [ ] do not use pa_usec_t in player or cache
 - [ ] network timestamp may not be accurate until MediaLatency after clock family change
 - [ ] fix handling of stopping stream. make it more robust. can the state cb be used?
       trigger with BUFFER_LATENCY = 3e3 or lower

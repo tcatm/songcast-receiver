@@ -1,34 +1,50 @@
 #pragma once
 
-#include <pulse/sample.h>
 #include <time.h>
 #include <stdint.h>
 
 #include "ohm_v1.h"
+#include "output.h"
+#include "cache.h"
+#include "audio_frame.h"
 
-struct audio_frame {
-  uint64_t ts_recv_usec;
-  uint64_t ts_due_usec;
-  uint64_t ts_network;
-  uint64_t ts_media;
-  uint64_t net_offset;
-  unsigned int seqnum;
-  pa_sample_spec ss;
-  int latency;
-  int samplecount;
-  void *audio;
-  void *readptr;
-  size_t audio_length;
-  bool halt;
-  bool resent;
-  bool timestamped;
+#define BUFFER_LATENCY 60e3 // 60ms buffer latency
+
+enum PlayerState {STOPPED, STARTING, PLAYING, HALT, STOPPING};
+/*
+  STOPPED
+    There is no stream.
+
+  STARTING
+    A stream has been created and it is waiting for data.
+
+  PLAYING
+    Audio data is being passed to the stream.
+
+  HALT
+    The stream has run out of audio data.
+
+  STOPPING
+    The stream is being drained and will be shut down.
+*/
+
+struct timing {
+  const pa_timing_info *pa;
+  int64_t start_local_usec;
+  int64_t initial_net_offset;
+  int64_t last_frame_ts;
+  size_t pa_offset_bytes;
+  size_t written;
 };
 
-struct missing_frames {
-  int count;
-  unsigned int seqnums[];
-};
+typedef struct {
+  pthread_mutex_t mutex;
+  enum PlayerState state;
+  struct cache *cache;
+  struct pulse pulse;
+  struct timing timing;
+} player_t;
 
-void player_init(void);
-void player_stop(void);
-struct missing_frames *handle_frame(ohm1_audio *frame, struct timespec *ts);
+void player_init(player_t *player);
+void player_stop(player_t *player);
+struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct timespec *ts);
