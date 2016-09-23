@@ -14,15 +14,20 @@
 #include "cache.h"
 
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
+// TODO determine BUFFER_LATENCY automagically
+#define BUFFER_LATENCY 60e3 // 60ms buffer latency
 
 // prototypes
 bool process_frame(player_t *player, struct audio_frame *frame);
 void play_audio(player_t *player, pa_stream *s, size_t writable, struct cache_info *info);
 void write_data(player_t *player, pa_stream *s, size_t request);
+void set_state(player_t *player, enum PlayerState new_state);
 
 // callbacks
 void write_cb(pa_stream *s, size_t request, void *userdata) {
   player_t *player = userdata;
+
+  assert(s == player->pulse.stream);
 
   pthread_mutex_lock(&player->mutex);
 
@@ -34,11 +39,12 @@ void write_cb(pa_stream *s, size_t request, void *userdata) {
 void underflow_cb(pa_stream *s, void *userdata) {
   player_t *player = userdata;
 
-  printf("underflow is currently not handled!\n");
+  assert(s == player->pulse.stream);
+
+  printf("Underflow!\n");
+
   pthread_mutex_lock(&player->mutex);
-
-  // TODO branch back into main thread somehow?
-
+  set_state(player, HALT);
   pthread_mutex_unlock(&player->mutex);
 }
 
@@ -66,9 +72,6 @@ char *print_state(enum PlayerState state) {
     case PLAYING:
       return "PLAYING";
       break;
-    case STOPPING:
-      return "STOPPING";
-      break;
     case HALT:
       return "HALT";
       break;
@@ -82,26 +85,43 @@ void set_state(player_t *player, enum PlayerState new_state) {
   player->state = new_state;
 }
 
+void stop(player_t *player) {
+  printf("Stopping stream.\n");
+  stop_stream(&player->pulse);
+  set_state(player, STOPPED);
+}
+
 void player_init(player_t *player) {
+  pthread_mutex_init(&player->mutex, NULL);
+
   set_state(player, STOPPED);
   player->cache = NULL;
   output_init(&player->pulse);
 }
 
+// Stop playback
 void player_stop(player_t *player) {
   pthread_mutex_lock(&player->mutex);
+
+  if (player->state != STOPPED)
+    stop(player);
 
   if (player->cache != NULL)
     discard_cache_through(player->cache, player->cache->latest_index);
 
   free(player->cache);
 
-  set_state(player, STOPPED);
   player->cache = NULL;
+
+  set_state(player, STOPPED);
+
   pthread_mutex_unlock(&player->mutex);
 }
 
 void try_prepare(player_t *player) {
+  if (player->state != STOPPED)
+    return;
+
   struct audio_frame *start = player->cache->frames[cache_pos(player->cache, 0)];
 
   if (start == NULL)
@@ -117,11 +137,15 @@ void try_prepare(player_t *player) {
   pa_buffer_attr bufattr = {
     .maxlength = -1,
     .minreq = -1,
-    .prebuf = 0,
+    .prebuf = -1,
     .tlength = pa_usec_to_bytes(BUFFER_LATENCY, &start->ss),
   };
 
+  pthread_mutex_unlock(&player->mutex);
+
   create_stream(&player->pulse, &start->ss, &bufattr, player, &callbacks);
+
+  pthread_mutex_lock(&player->mutex);
 
   printf("Stream prepared\n");
 }
@@ -199,7 +223,6 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
       set_state(player, PLAYING);
       break;
     case STOPPED:
-    case STOPPING:
     case HALT:
     default:
       pthread_mutex_unlock(&player->mutex);
@@ -306,6 +329,7 @@ void play_audio(player_t *player, pa_stream *s,size_t writable, struct cache_inf
 }
 
 struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct timespec *ts) {
+  struct missing_frames *missing = NULL;
   struct audio_frame *aframe = parse_frame(frame);
 
   if (aframe == NULL)
@@ -318,29 +342,29 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   aframe->ts_due_usec = latency_to_usec(aframe->ss.rate, aframe->latency) + aframe->ts_recv_usec;
 
   pthread_mutex_lock(&player->mutex);
-  if (player->cache != NULL)
-    remove_old_frames(player->cache, now);
+
+  if (player->state == HALT)
+    stop(player);
 
   bool consumed = process_frame(player, aframe);
 
-  if (!consumed)
-    free_frame(aframe);
-
-  if (player->cache != NULL)
+  if (consumed) {
+    // TODO can we get rid of this?
+    remove_old_frames(player->cache, now);
     fixup_timestamps(player->cache);
 
-  if (player->cache != NULL && player->state == STOPPED) {
-    print_cache(player->cache);
+    // Don't send resend requests when the frame was an answer.
+    if (!aframe->resent)
+      missing = request_frames(player->cache);
+
     try_prepare(player);
+  } else {
+    free_frame(aframe);
   }
 
   pthread_mutex_unlock(&player->mutex);
 
-  // Don't send resend requests when the frame was an answer.
-  if (!aframe->resent && player->cache != NULL)
-    return request_frames(player->cache);
-
-  return NULL;
+  return missing;
 }
 
 bool process_frame(player_t *player, struct audio_frame *frame) {

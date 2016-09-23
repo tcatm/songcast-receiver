@@ -8,9 +8,7 @@
 #include "cache.h"
 #include "audio_frame.h"
 
-#define BUFFER_LATENCY 60e3 // 60ms buffer latency
-
-enum PlayerState {STOPPED, STARTING, PLAYING, HALT, STOPPING};
+enum PlayerState {STOPPED, STARTING, PLAYING, HALT};
 /*
   STOPPED
     There is no stream.
@@ -22,10 +20,7 @@ enum PlayerState {STOPPED, STARTING, PLAYING, HALT, STOPPING};
     Audio data is being passed to the stream.
 
   HALT
-    The stream has run out of audio data.
-
-  STOPPING
-    The stream is being drained and will be shut down.
+    The stream must be stopped.
 */
 
 struct timing {

@@ -6,6 +6,7 @@ struct pulse {
   pa_threaded_mainloop *mainloop;
   pa_context *context;
   pa_stream *stream;
+  int operation_success;
 };
 
 struct output_cb {
@@ -15,4 +16,4 @@ struct output_cb {
 
 void output_init(struct pulse *pulse);
 void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr *bufattr, void *userdata, struct output_cb *callbacks);
-void stop_stream(pa_stream *s, void (*cb)(void));
+void stop_stream(struct pulse *pulse);
