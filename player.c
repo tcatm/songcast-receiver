@@ -239,7 +239,7 @@ silence:
   free(silence);
 }
 
-void play_audio(player_t *player, pa_stream *s,size_t writable, struct cache_info *info) {
+void play_audio(player_t *player, pa_stream *s, size_t writable, struct cache_info *info) {
   const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
   if (info->timestamped) {
