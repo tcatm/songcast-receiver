@@ -217,9 +217,10 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
           double rate_error = player->timing.ss.rate * ratio_error;
           double dhz = rate - ss->rate;
 
-          printf("rtp %.2f±%.2f (%d) usec\trate %f±%f Hz\tdHz %f Hz \ttotal_ratio %.6f±%f \t alr %.6f±%f\n",
-                 rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz, ratio, ratio_error, audio_local_ratio,
-                 player->timing.kalman_audiolocal_ratio.error);
+          printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\trtp %.2f±%.2f (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
+                 player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
+                 audio_local_ratio, player->timing.kalman_audiolocal_ratio.error, ratio, ratio_error,
+                 rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
 
           if (rate_error < 0.0005 * ss->rate)
             pa_stream_update_sample_rate(s, rate, NULL, NULL);
