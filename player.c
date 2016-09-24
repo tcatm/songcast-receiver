@@ -365,6 +365,12 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   if (index > player->cache->latest_index)
     player->cache->latest_index = index;
 
+  // TODO can we do netlocal ratio calculation here?
+  // TODO needs three frames (predecessor and successor)
+  // TODO this could simplify cache.c and also avoid fixup_timestamps
+  // TODO HALT frame should reset timing, also reset on large gap?
+  // TODO maybe reset when cache is empty?
+
   return true;
 }
 
