@@ -133,7 +133,6 @@ void try_prepare(player_t *player) {
   };
 
   kalman_init(&player->timing.kalman_netlocal_ratio);
-  kalman_init(&player->timing.kalman_audiolocal_ratio);
   kalman_init(&player->timing.kalman_rtp);
 
   pa_buffer_attr bufattr = {
@@ -189,41 +188,46 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
 
     if (player->timing.pa_offset_bytes == 0) {
       // Prepare timing information
-      player->timing.start_local_usec = play_at;
-      player->timing.pa_offset_bytes = ti.write_index;
+      player->timing.start_local_usec = ts;
+      player->timing.pa_offset_bytes = ti.read_index;
     } else {
-      double elapsed_local = ts + playback_latency - player->timing.start_local_usec;
-      double elapsed_audio = pa_bytes_to_usec(ti.write_index - player->timing.pa_offset_bytes, ss);
-      double elapsed_error = fabs(elapsed_audio / elapsed_local) * frame_size / 2;
-      double audio_local_ratio = kalman_run(&player->timing.kalman_audiolocal_ratio, elapsed_audio / elapsed_local, elapsed_error);
+      double elapsed_audio = pa_bytes_to_usec(ti.read_index - player->timing.pa_offset_bytes, ss);
+      if (elapsed_audio > 0) {
+        double elapsed_audio_rel = pa_bytes_to_usec(frame_size, ss) / elapsed_audio;
+        double elapsed_local = ts - player->timing.start_local_usec;
+        // Assume 800µs jitter in local clock
+        double elapsed_local_rel = 800 / elapsed_local;
+        double alr = elapsed_audio / elapsed_local;
+        double alr_error =  fabs(alr) * sqrt(elapsed_audio_rel * elapsed_audio_rel + elapsed_local_rel * elapsed_local_rel);
 
+        if (info.has_timing) {
+          kalman_run(&player->timing.kalman_netlocal_ratio, info.clock_ratio, info.clock_ratio_error);
 
-      if (info.has_timing) {
-        kalman_run(&player->timing.kalman_netlocal_ratio, info.clock_ratio, info.clock_ratio_error);
+          int write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
 
-        int write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
+          // Receive-To-Play is only defined while audio is playing
+          if (player->state == PLAYING) {
+            rtp = kalman_run(&player->timing.kalman_rtp, delta, info.start_error);
+          }
 
-        // Receive-To-Play is only defined while audio is playing
-        if (player->state == PLAYING) {
-          rtp = kalman_run(&player->timing.kalman_rtp, delta, info.start_error);
-        }
+          if (!isnan(alr)) {
+            double ratio = player->timing.kalman_netlocal_ratio.est / alr;
+            double nlr_rel = player->timing.kalman_netlocal_ratio.rel;
+            double alr_rel = alr_error / alr;
+            double ratio_error = fabs(ratio) * sqrt(nlr_rel * nlr_rel + alr_rel * alr_rel);
+            double rate = player->timing.ss.rate * ratio;
+            double rate_error = player->timing.ss.rate * ratio_error;
+            double dhz = rate - ss->rate;
 
-        if (!isnan(audio_local_ratio)) {
-          double ratio = player->timing.kalman_netlocal_ratio.est / audio_local_ratio;
-          double nlr_rel = player->timing.kalman_netlocal_ratio.rel;
-          double alr_rel = player->timing.kalman_audiolocal_ratio.rel;
-          double ratio_error = fabs(ratio) * sqrt(nlr_rel * nlr_rel + alr_rel * alr_rel);
-          double rate = player->timing.ss.rate * ratio;
-          double rate_error = player->timing.ss.rate * ratio_error;
-          double dhz = rate - ss->rate;
+            // TODO can I use a timing update callback?
 
-          printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\trtp %.2f±%.2f (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
-                 player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
-                 audio_local_ratio, player->timing.kalman_audiolocal_ratio.error, ratio, ratio_error,
-                 rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
+            printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\trtp %.2f±%.2f (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
+                   player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
+                   alr, alr_error, ratio, ratio_error,
+                   rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
 
-          if (rate_error < 0.0005 * ss->rate)
-            pa_stream_update_sample_rate(s, rate, NULL, NULL);
+//              pa_stream_update_sample_rate(s, rate, NULL, NULL);
+          }
         }
       }
     }
