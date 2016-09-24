@@ -31,8 +31,8 @@ struct timing {
   size_t pa_offset_bytes;
   size_t written;
   kalman_t kalman_netlocal_ratio;
+  kalman_t kalman_audiolocal_ratio;
   kalman_t kalman_rtp;
-  kalman_t kalman_rate;
   pa_sample_spec ss;
 };
 

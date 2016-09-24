@@ -128,11 +128,13 @@ void try_prepare(player_t *player) {
   assert(player->state == STOPPED);
 
   set_state(player, STARTING);
-  player->timing = (struct timing){};
+  player->timing = (struct timing){
+    .ss = start->ss
+  };
 
   kalman_init(&player->timing.kalman_netlocal_ratio);
+  kalman_init(&player->timing.kalman_audiolocal_ratio);
   kalman_init(&player->timing.kalman_rtp);
-  kalman_init(&player->timing.kalman_rate);
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -176,6 +178,7 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
 
   if (player->timing.pa != NULL && player->timing.pa->playing == 1) {
     pa_timing_info ti = *player->timing.pa;
+    int frame_size = pa_frame_size(&player->timing.ss);
 
     uint64_t ts = (uint64_t)ti.timestamp.tv_sec * 1000000 + ti.timestamp.tv_usec;
     int playback_latency = ti.sink_usec + ti.transport_usec +
@@ -186,13 +189,14 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
 
     if (player->timing.pa_offset_bytes == 0) {
       // Prepare timing information
-      player->timing.ss = *ss;
       player->timing.start_local_usec = play_at;
       player->timing.pa_offset_bytes = ti.write_index;
     } else {
       double elapsed_local = ts + playback_latency - player->timing.start_local_usec;
-      double elapsed_audio = pa_bytes_to_usec(ti.write_index, ss) - pa_bytes_to_usec(player->timing.pa_offset_bytes, ss);
-      double audio_local_ratio = elapsed_audio / elapsed_local;
+      double elapsed_audio = pa_bytes_to_usec(ti.write_index - player->timing.pa_offset_bytes, ss);
+      double elapsed_error = fabs(elapsed_audio / elapsed_local) * frame_size / 2;
+      double audio_local_ratio = kalman_run(&player->timing.kalman_audiolocal_ratio, elapsed_audio / elapsed_local, elapsed_error);
+
 
       if (info.has_timing) {
         kalman_run(&player->timing.kalman_netlocal_ratio, info.clock_ratio, info.clock_ratio_error);
@@ -205,18 +209,20 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
         }
 
         if (!isnan(audio_local_ratio)) {
-          double netlocal_error_rel = player->timing.kalman_netlocal_ratio.error / player->timing.kalman_netlocal_ratio.est;
           double ratio = player->timing.kalman_netlocal_ratio.est / audio_local_ratio;
-          double ratio_error = fabs(ratio) * netlocal_error_rel;
+          double nlr_rel = player->timing.kalman_netlocal_ratio.rel;
+          double alr_rel = player->timing.kalman_audiolocal_ratio.rel;
+          double ratio_error = fabs(ratio) * sqrt(nlr_rel * nlr_rel + alr_rel * alr_rel);
           double rate = player->timing.ss.rate * ratio;
           double rate_error = player->timing.ss.rate * ratio_error;
-          double est_rate = kalman_run(&player->timing.kalman_rate, rate, rate_error);
-          double est_rate_error = player->timing.kalman_rate.error;
+          double dhz = rate - ss->rate;
 
-          printf("rtp %.2f±%.2f (%d) usec\trate %f±%f Hz\ttotal_ratio %.20g\n",
-                 rtp, player->timing.kalman_rtp.error, delta, est_rate, est_rate_error, ratio);
+          printf("rtp %.2f±%.2f (%d) usec\trate %f±%f Hz\tdHz %f Hz \ttotal_ratio %.6f±%f \t alr %.6f±%f\n",
+                 rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz, ratio, ratio_error, audio_local_ratio,
+                 player->timing.kalman_audiolocal_ratio.error);
 
-          pa_stream_update_sample_rate(s, 44129, NULL, NULL);
+          if (rate_error < 0.0005 * ss->rate)
+            pa_stream_update_sample_rate(s, rate, NULL, NULL);
         }
       }
     }
