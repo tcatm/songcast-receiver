@@ -35,6 +35,11 @@ void write_cb(pa_stream *s, size_t request, void *userdata) {
 
   write_data(player, s, request);
 
+  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
+
+  if (o != NULL)
+    pa_operation_unref(o);
+
   pthread_mutex_unlock(&player->mutex);
 }
 
@@ -206,11 +211,6 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
   if (player->state == STOPPED)
     return;
 
-  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
-
-  if (o != NULL)
-    pa_operation_unref(o);
-
   switch (player->state) {
     case PLAYING:
       goto play;
@@ -370,6 +370,7 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   // TODO this could simplify cache.c and also avoid fixup_timestamps
   // TODO HALT frame should reset timing, also reset on large gap?
   // TODO maybe reset when cache is empty?
+  // TODO the kalman filter is a property of the cache
 
   return true;
 }
