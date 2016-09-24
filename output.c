@@ -79,6 +79,7 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
   pa_stream_set_state_callback(pulse->stream, stream_state_cb, pulse->mainloop);
   pa_stream_set_write_callback(pulse->stream, callbacks->write, userdata);
   pa_stream_set_underflow_callback(pulse->stream, callbacks->underflow, userdata);
+  pa_stream_set_latency_update_callback(pulse->stream, callbacks->latency, userdata);
 
   char format[PA_SAMPLE_SPEC_SNPRINT_MAX];
   pa_sample_spec_snprint(format, sizeof(format), ss);

@@ -25,7 +25,6 @@ enum PlayerState {STOPPED, STARTING, PLAYING, HALT};
 */
 
 struct timing {
-  const pa_timing_info *pa;
   int64_t start_local_usec;
   int64_t last_frame_ts;
   size_t pa_offset_bytes;

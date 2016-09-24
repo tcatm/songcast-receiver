@@ -10,8 +10,9 @@ struct pulse {
 };
 
 struct output_cb {
-  void (*write)(pa_stream *s, size_t size, void *userdata);
-  void (*underflow)(pa_stream *s, void *userdata);
+  pa_stream_request_cb_t write;
+  pa_stream_notify_cb_t underflow;
+  pa_stream_notify_cb_t latency;
 };
 
 void output_init(struct pulse *pulse);

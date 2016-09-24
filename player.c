@@ -20,9 +20,10 @@
 
 // prototypes
 bool process_frame(player_t *player, struct audio_frame *frame);
-void play_audio(player_t *player, pa_stream *s, size_t writable, struct cache_info *info);
+void play_audio(player_t *player, pa_stream *s, size_t writable);
 void write_data(player_t *player, pa_stream *s, size_t request);
 void set_state(player_t *player, enum PlayerState new_state);
+void update_timing(player_t *player);
 
 // callbacks
 void write_cb(pa_stream *s, size_t request, void *userdata) {
@@ -49,9 +50,20 @@ void underflow_cb(pa_stream *s, void *userdata) {
   pthread_mutex_unlock(&player->mutex);
 }
 
+void latency_cb(pa_stream *s, void *userdata) {
+  player_t *player = userdata;
+
+  assert(s == player->pulse.stream);
+
+  pthread_mutex_lock(&player->mutex);
+  update_timing(player);
+  pthread_mutex_unlock(&player->mutex);
+}
+
 struct output_cb callbacks = {
   .write = write_cb,
   .underflow = underflow_cb,
+  .latency = latency_cb,
 };
 
 // functions
@@ -151,122 +163,65 @@ void try_prepare(player_t *player) {
   printf("Stream prepared\n");
 }
 
+static bool prepare_for_start(player_t *player, size_t request) {
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(player->pulse.stream);
+  const pa_timing_info *ti = pa_stream_get_timing_info(player->pulse.stream);
+
+  if (ti == NULL || ti->playing != 1)
+    return false;
+
+  struct cache_info info = cache_continuous_size(player->cache);
+
+  uint64_t ts = (uint64_t)ti->timestamp.tv_sec * 1000000 + ti->timestamp.tv_usec;
+  int playback_latency = ti->sink_usec + ti->transport_usec +
+                         pa_bytes_to_usec(ti->write_index - ti->read_index, ss);
+
+  uint64_t start_at = info.start + info.latency_usec;
+  uint64_t play_at = ts + playback_latency;
+  int delta = play_at - start_at;
+
+  printf("Request for %zd bytes), can start at %ld, would play at %ld, in %d usec\n", request, start_at, play_at, delta);
+
+  if (delta < 0)
+    return false;
+
+  size_t skip = pa_usec_to_bytes(delta, ss);
+
+  printf("Need to skip %zd bytes, have %zd bytes\n", skip, info.available);
+
+  if (info.available < request + skip) {
+    printf("Not enough data in buffer to start (missing %zd bytes)\n", request - skip - info.available);
+    return false;
+  }
+
+  printf("Request can be fullfilled.\n");
+
+  trim_cache(player->cache, skip);
+  return true;
+}
+
 // TODO wants player. is it really needed? cache is used. timing is used.
 // TODO what pre-conditions need to be met? cache must be present, stream is required
 void write_data(player_t *player, pa_stream *s, size_t request) {
   if (player->state == STOPPED)
     return;
 
-  const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
-
-  if (player->timing.pa == NULL)
-    player->timing.pa = pa_stream_get_timing_info(s);
-
   pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
 
   if (o != NULL)
     pa_operation_unref(o);
 
-  struct cache_info info = cache_continuous_size(player->cache);
-
-  int64_t start_at = info.start + info.latency_usec;
-  int delta;
-  uint64_t play_at;
-
-  double rtp;
-
-  if (player->timing.pa != NULL && player->timing.pa->playing == 1) {
-    pa_timing_info ti = *player->timing.pa;
-    int frame_size = pa_frame_size(&player->timing.ss);
-
-    uint64_t ts = (uint64_t)ti.timestamp.tv_sec * 1000000 + ti.timestamp.tv_usec;
-    int playback_latency = ti.sink_usec + ti.transport_usec +
-                           pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
-
-    play_at = ts + playback_latency;
-    delta = play_at - start_at;
-
-    if (player->timing.pa_offset_bytes == 0) {
-      // Prepare timing information
-      player->timing.start_local_usec = ts;
-      player->timing.pa_offset_bytes = ti.read_index;
-    } else {
-      double elapsed_audio = pa_bytes_to_usec(ti.read_index - player->timing.pa_offset_bytes, ss);
-      if (elapsed_audio > 0) {
-        double elapsed_audio_rel = pa_bytes_to_usec(frame_size, ss) / elapsed_audio;
-        double elapsed_local = ts - player->timing.start_local_usec;
-        // Assume 800µs jitter in local clock
-        double elapsed_local_rel = 800 / elapsed_local;
-        double alr = elapsed_audio / elapsed_local;
-        double alr_error =  fabs(alr) * sqrt(elapsed_audio_rel * elapsed_audio_rel + elapsed_local_rel * elapsed_local_rel);
-
-        if (info.has_timing) {
-          kalman_run(&player->timing.kalman_netlocal_ratio, info.clock_ratio, info.clock_ratio_error);
-
-          int write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
-
-          // Receive-To-Play is only defined while audio is playing
-          if (player->state == PLAYING) {
-            rtp = kalman_run(&player->timing.kalman_rtp, delta, info.start_error);
-          }
-
-          if (!isnan(alr)) {
-            double ratio = player->timing.kalman_netlocal_ratio.est / alr;
-            double nlr_rel = player->timing.kalman_netlocal_ratio.rel;
-            double alr_rel = alr_error / alr;
-            double ratio_error = fabs(ratio) * sqrt(nlr_rel * nlr_rel + alr_rel * alr_rel);
-            double rate = player->timing.ss.rate * ratio;
-            double rate_error = player->timing.ss.rate * ratio_error;
-            double dhz = rate - ss->rate;
-
-            // TODO can I use a timing update callback?
-
-            printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\trtp %.2f±%.2f (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
-                   player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
-                   alr, alr_error, ratio, ratio_error,
-                   rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
-
-//              pa_stream_update_sample_rate(s, rate, NULL, NULL);
-          }
-        }
-      }
-    }
-  }
-
   switch (player->state) {
     case PLAYING:
+      goto play;
       break;
     case STARTING:
-      if (player->timing.pa == NULL || player->timing.pa->playing == 0)
-        goto silence;
-
-      printf("Request for %zd bytes (playing = %i), can start at %ld, would play at %ld, in %d usec\n", request, player->timing.pa->playing, start_at, play_at, delta);
-
-      // Can't start playing when we don't have a timing information
-      if (!info.has_timing)
-        goto silence;
-
-      if (delta < 0)
-        goto silence;
-
-      size_t skip = pa_usec_to_bytes(delta, ss);
-
-      printf("Need to skip %zd bytes, have %zd bytes\n", skip, info.available);
-
-      if (info.available < request + skip) {
-        printf("Not enough data in buffer to start (missing %zd bytes)\n", request - skip - info.available);
-        goto silence;
+      if (prepare_for_start(player, request)) {
+        set_state(player, PLAYING);
+        goto play;
       }
 
-      printf("Request can be fullfilled.\n");
-
-      trim_cache(player->cache, skip);
-
-      // Adjust cache info
-      info.start += delta;
-      info.available -= skip;
-
-      set_state(player, PLAYING);
+      goto silence;
       break;
     case STOPPED:
     case HALT:
@@ -276,20 +231,23 @@ void write_data(player_t *player, pa_stream *s, size_t request) {
       break;
   }
 
-  play_audio(player, s, request, &info);
-  player->timing.written += request;
-
   return;
 
 uint8_t *silence;
+
+play:
+  play_audio(player, s, request);
+  player->timing.written += request;
+  return;
 
 silence:
   silence = calloc(1, request);
   pa_stream_write(s, silence, request, NULL, 0, PA_SEEK_RELATIVE);
   free(silence);
+  return;
 }
 
-void play_audio(player_t *player, pa_stream *s, size_t writable, struct cache_info *info) {
+void play_audio(player_t *player, pa_stream *s, size_t writable) {
   size_t written = 0;
 
   //pa_usec_t available_usec = pa_bytes_to_usec(info->available, pa_stream_get_sample_spec(s));
@@ -408,4 +366,69 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
     player->cache->latest_index = index;
 
   return true;
+}
+
+void update_timing(player_t *player) {
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(player->pulse.stream);
+  pa_timing_info ti = *pa_stream_get_timing_info(player->pulse.stream);
+  struct cache_info info = cache_continuous_size(player->cache);
+
+  if (ti.playing != 1)
+    return;
+
+  int frame_size = pa_frame_size(&player->timing.ss);
+
+  uint64_t ts = (uint64_t)ti.timestamp.tv_sec * 1000000 + ti.timestamp.tv_usec;
+  int playback_latency = ti.sink_usec + ti.transport_usec +
+                         pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
+
+  uint64_t start_at = info.start + info.latency_usec;
+
+  uint64_t play_at = ts + playback_latency;
+  int delta = play_at - start_at;
+  double rtp;
+
+  if (player->timing.pa_offset_bytes == 0) {
+    // Prepare timing information
+    player->timing.start_local_usec = ts;
+    player->timing.pa_offset_bytes = ti.read_index;
+  } else {
+    double elapsed_audio = pa_bytes_to_usec(ti.read_index - player->timing.pa_offset_bytes, ss);
+    if (elapsed_audio > 0) {
+      double elapsed_audio_rel = pa_bytes_to_usec(frame_size, ss) / elapsed_audio;
+      double elapsed_local = ts - player->timing.start_local_usec;
+      // Assume 800µs jitter in local clock
+      double elapsed_local_rel = 800 / elapsed_local;
+      double alr = elapsed_audio / elapsed_local;
+      double alr_error =  fabs(alr) * sqrt(elapsed_audio_rel * elapsed_audio_rel + elapsed_local_rel * elapsed_local_rel);
+
+      if (info.has_timing) {
+        kalman_run(&player->timing.kalman_netlocal_ratio, info.clock_ratio, info.clock_ratio_error);
+
+        int write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
+
+        // Receive-To-Play is only defined while audio is playing
+        if (player->state == PLAYING) {
+          rtp = kalman_run(&player->timing.kalman_rtp, delta, info.start_error);
+        }
+
+        if (!isnan(alr)) {
+          double ratio = player->timing.kalman_netlocal_ratio.est / alr;
+          double nlr_rel = player->timing.kalman_netlocal_ratio.rel;
+          double alr_rel = alr_error / alr;
+          double ratio_error = fabs(ratio) * sqrt(nlr_rel * nlr_rel + alr_rel * alr_rel);
+          double rate = player->timing.ss.rate * ratio;
+          double rate_error = player->timing.ss.rate * ratio_error;
+          double dhz = rate - ss->rate;
+
+          printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\trtp %.2f±%.2f (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
+                 player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
+                 alr, alr_error, ratio, ratio_error,
+                 rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
+
+          //  pa_stream_update_sample_rate(s, 44129, NULL, NULL);
+        }
+      }
+    }
+  }
 }
