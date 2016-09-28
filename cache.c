@@ -75,35 +75,6 @@ void print_cache(struct cache *cache) {
   printf("]\n");
 }
 
-void fixup_timestamps(struct cache *cache) {
-  int end = cache->latest_index;
-  uint64_t last_ts_network = 0, last_ts_media = 0;
-
-  for (int index = 0; index <= end; index++) {
-    int pos = cache_pos(cache, index);
-    int previous = cache_pos(cache, index - 1);
-    struct audio_frame *frame = cache->frames[pos];
-    struct audio_frame *pframe = cache->frames[previous];
-
-    if (frame == NULL)
-      break;
-
-    if (frame->ts_network < last_ts_network)
-      frame->ts_network += 1ULL<<32;
-
-    if (frame->ts_media < last_ts_media)
-      frame->ts_media += 1ULL<<32;
-
-    if (index > 0) {
-      int64_t ts_network = latency_to_usec(frame->ss.rate, frame->ts_network);
-      pframe->net_offset = pframe->ts_recv_usec - ts_network;
-    }
-
-    last_ts_network = frame->ts_network;
-    last_ts_media = frame->ts_media;
-  }
-}
-
 struct cache_info cache_continuous_size(struct cache *cache) {
   assert(cache != NULL);
 

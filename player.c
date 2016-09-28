@@ -336,8 +336,6 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   bool consumed = process_frame(player, aframe);
 
   if (consumed) {
-    //fixup_timestamps(player->cache);
-
     // Don't send resend requests when the frame was an answer.
     if (!aframe->resent)
       missing = request_frames(player->cache);
@@ -408,7 +406,6 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
 
     // TODO can we do netlocal ratio calculation here?
     // TODO needs three frames (predecessor and successor)
-    // TODO this could simplify cache.c and also avoid fixup_timestamps
     // TODO HALT frame should reset timing, also reset on large gap?
     // TODO also reset on samplerate family change
     // TODO maybe reset when cache is empty?

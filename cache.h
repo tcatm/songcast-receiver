@@ -43,6 +43,5 @@ struct cache_info cache_continuous_size(struct cache *cache);
 void cache_seek_forward(struct cache *cache, unsigned int seqnum);
 int cache_pos(struct cache *cache, int index);
 bool trim_cache(struct cache *cache, size_t trim);
-void fixup_timestamps(struct cache *cache);
 void discard_cache_through(struct cache *cache, int discard);
 struct missing_frames *request_frames(struct cache *cache);
