@@ -26,6 +26,7 @@
       trigger with BUFFER_LATENCY = 3e3 or lower
       maybe unref stream in main thread?
 - [X] use network timestamps if present, probably during parsing?
+- [ ] remote clock may be unstable initially!
 - [ ] search for audio from end of cache? (format change)
 - [ ] a periodic timer may be useful to handle HALTs when no data is coming in
 - [ ] make output.c robust against all kinds of pulseaudio fuckups

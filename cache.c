@@ -114,7 +114,6 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     .halt = false,
     .format_change = false,
     .start = 0,
-    .net_offset = 0,
     .halt_index = -1,
     .format_change_index = -1,
     .latency_usec = 0,
@@ -123,13 +122,8 @@ struct cache_info cache_continuous_size(struct cache *cache) {
   };
 
   double ts_mean = 0;
-  double ts_m2 = 0;
-
-  double offset_mean = 0;
-  double offset_m2 = 0;
 
   int64_t ts_min, ts_max;
-  int64_t offset_min, offset_max;
 
   int j = 0;
 
@@ -154,28 +148,16 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     info.available += frame->audio_length;
 
-    if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0) {
-      int64_t ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
+    if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0 && frame->timestamp_is_good) {
+      int64_t ts = frame->ts_due_usec - pa_bytes_to_usec(info.available, &frame->ss);
 
       double d;
 
-      if (j == 0) {
-        offset_min = frame->net_offset;
-        ts_min = frame->ts_recv_usec;
-      }
-
-      offset_max = frame->net_offset;
-      ts_max = frame->ts_recv_usec;
-
+      // TODO use Kalman Filter + RTS to estimate start?
       j++;
 
       d = ts - ts_mean;
       ts_mean += d / j;
-      ts_m2 += d * (ts - ts_mean);
-
-      d = frame->net_offset - offset_mean;
-      offset_mean += d / j;
-      offset_m2 += d * (frame->net_offset - offset_mean);
     }
 
     info.latency_usec = latency_to_usec(frame->ss.rate, frame->latency);
@@ -193,22 +175,7 @@ struct cache_info cache_continuous_size(struct cache *cache) {
     return info;
 
   info.has_timing = true;
-
   info.start = ts_mean + 0.5;
-  info.start_error = sqrt(ts_m2 / j);
-
-  info.net_offset = offset_mean + 0.5;
-  info.net_offset_error = sqrt(offset_m2 / j);
-
-  double dlocal = ts_max - ts_min;
-  double dremote = dlocal + offset_min - offset_max;
-  double dlocal_error = sqrt(2) * sqrt((info.start_error - 1) * info.start_error);
-  double dremote_error = dlocal_error + sqrt(2) * sqrt((info.net_offset_error - 1) * info.net_offset_error);
-  double dlocal_rel = dlocal_error / dlocal;
-  double dremote_rel = dremote_error / dremote;
-
-  info.clock_ratio = dremote / dlocal;
-  info.clock_ratio_error = fabs(info.clock_ratio) * sqrt(dremote_rel * dremote_rel + dlocal_rel * dlocal_rel);
 
   return info;
 }

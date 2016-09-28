@@ -9,6 +9,7 @@ struct audio_frame {
   uint64_t ts_recv_usec;
   uint64_t ts_network;
   uint64_t ts_media;
+  uint64_t ts_due_usec;
   uint64_t net_offset;
   unsigned int seqnum;
   pa_sample_spec ss;
@@ -20,6 +21,7 @@ struct audio_frame {
   bool halt;
   bool resent;
   bool timestamped;
+  bool timestamp_is_good;
 };
 
 bool same_format(struct audio_frame *a, struct audio_frame *b);

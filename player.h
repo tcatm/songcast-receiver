@@ -24,14 +24,27 @@ enum PlayerState {STOPPED, STARTING, PLAYING, HALT};
     The stream must be stopped.
 */
 
+struct remote_clock {
+  unsigned int ts_remote_last;
+  uint64_t ts_local_last;
+  uint64_t ts_local_0;
+  uint64_t ts_remote;
+
+  kalman2d_t filter;
+
+  bool invalid;
+};
+
 struct timing {
   int64_t start_local_usec;
   int64_t last_frame_ts;
   size_t pa_offset_bytes;
   size_t written;
-  kalman_t kalman_netlocal_ratio;
-  kalman_t kalman_rtp;
   pa_sample_spec ss;
+
+  uint64_t local_last;
+
+  kalman2d_t pa_filter;
 };
 
 typedef struct {
@@ -40,6 +53,7 @@ typedef struct {
   struct cache *cache;
   struct pulse pulse;
   struct timing timing;
+  struct remote_clock remote_clock;
 } player_t;
 
 void player_init(player_t *player);

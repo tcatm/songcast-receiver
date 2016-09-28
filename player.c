@@ -8,6 +8,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <math.h>
+#include <complex.h>
 
 #include "player.h"
 #include "output.h"
@@ -103,15 +104,21 @@ void set_state(player_t *player, enum PlayerState new_state) {
   player->state = new_state;
 }
 
+void reset_remote_clock(struct remote_clock *clock) {
+  clock->invalid = true;
+}
+
 void stop(player_t *player) {
   printf("Stopping stream.\n");
   stop_stream(&player->pulse);
+  reset_remote_clock(&player->remote_clock);
   set_state(player, STOPPED);
 }
 
 void player_init(player_t *player) {
   pthread_mutex_init(&player->mutex, NULL);
 
+  reset_remote_clock(&player->remote_clock);
   set_state(player, STOPPED);
   player->cache = cache_init(CACHE_SIZE);
   output_init(&player->pulse);
@@ -149,8 +156,7 @@ void try_prepare(player_t *player) {
     .ss = start->ss
   };
 
-  kalman_init(&player->timing.kalman_netlocal_ratio);
-  kalman_init(&player->timing.kalman_rtp);
+  kalman2d_init(&player->timing.pa_filter, (mat2d){0, 0, 1, 0}, (mat2d){1000, 0, 0, 1000}, 25);
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -330,7 +336,7 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   bool consumed = process_frame(player, aframe);
 
   if (consumed) {
-    fixup_timestamps(player->cache);
+    //fixup_timestamps(player->cache);
 
     // Don't send resend requests when the frame was an answer.
     if (!aframe->resent)
@@ -344,6 +350,69 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   pthread_mutex_unlock(&player->mutex);
 
   return missing;
+}
+
+void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame, struct audio_frame *successor) {
+  assert(frame != NULL);
+  assert(successor != NULL);
+  assert(successor->seqnum > frame->seqnum);
+
+  uint64_t ts_local = frame->ts_recv_usec;
+  int delta_remote_raw = successor->ts_network - clock->ts_remote_last;
+
+  // Assume wrap around if delta is negativ.
+  if (delta_remote_raw < 0)
+    delta_remote_raw += 1ULL<<32;
+
+  int delta_local = ts_local - clock->ts_local_last;
+  int delta_remote = latency_to_usec(successor->ss.rate, delta_remote_raw);
+
+  clock->ts_remote += delta_remote;
+
+  clock->ts_local_last = ts_local;
+  clock->ts_remote_last = successor->ts_network;
+
+  double a = delta_remote / (double)delta_local;
+
+  // If clocks are off by more than 5% one of them is probably still unstable.
+//  if (fabs(a - 1) > 0.5) {
+  //  printf("ratio too large: %f\n", a);
+    //return;
+  //}
+
+  if (clock->invalid) {
+    clock->ts_remote = 0;
+    clock->ts_local_0 = ts_local;
+    clock->invalid = false;
+    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){5, 0, 0, 0.0001}, 490);
+    return;
+  }
+
+  if (delta_remote > 100e3) {
+    reset_remote_clock(clock);
+    return;
+  }
+
+  uint64_t elapsed_local = ts_local - clock->ts_local_0;
+//  printf("%" PRIu64 "\t%" PRIu64 " %d\t", elapsed_local, clock->ts_remote, delta_remote);
+
+  kalman2d_run(&clock->filter, delta_local, clock->ts_remote);
+// printf("%f\n", kalman2d_get_v(&clock->filter));
+
+  if (kalman2d_get_p(&clock->filter) < 0.001) {
+    frame->ts_due_usec = clock->ts_local_0 + kalman2d_get_v(&clock->filter) * elapsed_local;
+    frame->timestamp_is_good = true;
+  }
+
+  return;
+
+    // TODO can we do netlocal ratio calculation here?
+    // TODO needs three frames (predecessor and successor)
+    // TODO this could simplify cache.c and also avoid fixup_timestamps
+    // TODO HALT frame should reset timing, also reset on large gap?
+    // TODO also reset on samplerate family change
+    // TODO maybe reset when cache is empty?
+    // TODO the kalman filter is a property of the cache
 }
 
 bool process_frame(player_t *player, struct audio_frame *frame) {
@@ -365,12 +434,22 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   if (index > player->cache->latest_index)
     player->cache->latest_index = index;
 
-  // TODO can we do netlocal ratio calculation here?
-  // TODO needs three frames (predecessor and successor)
-  // TODO this could simplify cache.c and also avoid fixup_timestamps
-  // TODO HALT frame should reset timing, also reset on large gap?
-  // TODO maybe reset when cache is empty?
-  // TODO the kalman filter is a property of the cache
+  // Get previous frame to calculate timing.
+
+  if (index < 1)
+    return true;
+
+  struct audio_frame *predecessor = player->cache->frames[cache_pos(player->cache, index - 1)];
+
+  if (predecessor == NULL)
+    return true;
+
+  if (!frame->timestamped || !predecessor->timestamped ||
+      predecessor->resent || frame->resent || predecessor->halt ||
+      !same_format(frame, predecessor))
+    return true;
+
+  estimate_remote_clock(&player->remote_clock, predecessor, frame);
 
   return true;
 }
@@ -383,8 +462,6 @@ void update_timing(player_t *player) {
   if (ti.playing != 1)
     return;
 
-  int frame_size = pa_frame_size(&player->timing.ss);
-
   uint64_t ts = (uint64_t)ti.timestamp.tv_sec * 1000000 + ti.timestamp.tv_usec;
   int playback_latency = ti.sink_usec + ti.transport_usec +
                          pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
@@ -393,49 +470,34 @@ void update_timing(player_t *player) {
 
   uint64_t play_at = ts + playback_latency;
   int delta = play_at - start_at;
-  double rtp;
 
   if (player->timing.pa_offset_bytes == 0) {
     // Prepare timing information
     player->timing.start_local_usec = ts;
     player->timing.pa_offset_bytes = ti.read_index;
+    player->timing.local_last = ts;
   } else {
     double elapsed_audio = pa_bytes_to_usec(ti.read_index - player->timing.pa_offset_bytes, ss);
-    if (elapsed_audio > 0) {
-      double elapsed_audio_rel = pa_bytes_to_usec(frame_size, ss) / elapsed_audio;
-      double elapsed_local = ts - player->timing.start_local_usec;
-      // Assume 800µs jitter in local clock
-      double elapsed_local_rel = 800 / elapsed_local;
-      double alr = elapsed_audio / elapsed_local;
-      double alr_error =  fabs(alr) * sqrt(elapsed_audio_rel * elapsed_audio_rel + elapsed_local_rel * elapsed_local_rel);
+    double delta_local = ts - player->timing.local_last;
+    kalman2d_run(&player->timing.pa_filter, delta_local, elapsed_audio);
+    player->timing.local_last = ts;
 
-      if (info.has_timing) {
-        kalman_run(&player->timing.kalman_netlocal_ratio, info.clock_ratio, info.clock_ratio_error);
+    double netclk_offset = kalman2d_get_x(&player->remote_clock.filter) - (player->remote_clock.ts_local_last - player->remote_clock.ts_local_0);
+    double paclk_offset = kalman2d_get_x(&player->timing.pa_filter) - (ts - player->timing.start_local_usec);
 
-        int write_latency = pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
+    double ratio = kalman2d_get_v(&player->remote_clock.filter) / kalman2d_get_v(&player->timing.pa_filter);
+    double rate = player->timing.ss.rate * kalman2d_get_v(&player->remote_clock.filter) / 0.999980;
 
-        // Receive-To-Play is only defined while audio is playing
-        if (player->state == PLAYING) {
-          rtp = kalman_run(&player->timing.kalman_rtp, delta, info.start_error);
-        }
+    printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\n",
+           kalman2d_get_v(&player->remote_clock.filter), kalman2d_get_p(&player->remote_clock.filter),
+           kalman2d_get_v(&player->timing.pa_filter), kalman2d_get_p(&player->timing.pa_filter),
+           ratio, rate,
+           netclk_offset, paclk_offset, netclk_offset + paclk_offset);
 
-        if (!isnan(alr)) {
-          double ratio = player->timing.kalman_netlocal_ratio.est / alr;
-          double nlr_rel = player->timing.kalman_netlocal_ratio.rel;
-          double alr_rel = alr_error / alr;
-          double ratio_error = fabs(ratio) * sqrt(nlr_rel * nlr_rel + alr_rel * alr_rel);
-          double rate = player->timing.ss.rate * ratio;
-          double rate_error = player->timing.ss.rate * ratio_error;
-          double dhz = rate - ss->rate;
-
-          printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\trtp %.2f±%.2f (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
-                 player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
-                 alr, alr_error, ratio, ratio_error,
-                 rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
-
-          //  pa_stream_update_sample_rate(s, 44129, NULL, NULL);
-        }
-      }
-    }
+    //printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\t (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
+    //       player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
+    //       alr, alr_error, ratio, ratio_error,
+    //       rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
+    pa_stream_update_sample_rate(player->pulse.stream, rate + 0.5, NULL, NULL);
   }
 }
