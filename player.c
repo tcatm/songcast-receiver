@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <math.h>
 #include <complex.h>
+#include <samplerate.h>
 
 #include "player.h"
 #include "output.h"
@@ -36,10 +37,10 @@ void write_cb(pa_stream *s, size_t request, void *userdata) {
 
   write_data(player, s, request);
 
-  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
+//  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
 
-  if (o != NULL)
-    pa_operation_unref(o);
+//  if (o != NULL)
+//    pa_operation_unref(o);
 
   pthread_mutex_unlock(&player->mutex);
 }
@@ -111,7 +112,7 @@ void reset_remote_clock(struct remote_clock *clock) {
 void stop(player_t *player) {
   printf("Stopping stream.\n");
   stop_stream(&player->pulse);
-  reset_remote_clock(&player->remote_clock);
+  src_delete(player->src);
   set_state(player, STOPPED);
 }
 
@@ -152,10 +153,13 @@ void try_prepare(player_t *player) {
   assert(player->state == STOPPED);
 
   set_state(player, STARTING);
+
   player->timing = (struct timing){
-    .ss = start->ss
+    .ss = start->ss,
+    .ratio = 1,
   };
 
+  reset_remote_clock(&player->remote_clock);
   kalman2d_init(&player->timing.pa_filter, (mat2d){0, 0, 1, 0}, (mat2d){1000, 0, 0, 1000}, 25);
 
   pa_buffer_attr bufattr = {
@@ -166,6 +170,12 @@ void try_prepare(player_t *player) {
   };
 
   pthread_mutex_unlock(&player->mutex);
+
+  int error;
+  player->src = src_new(SRC_SINC_BEST_QUALITY, start->ss.channels, &error);
+  assert(player->src != NULL);
+
+  SRC_STATE* src_new (int converter_type, int channels, int *error) ;
 
   create_stream(&player->pulse, &start->ss, &bufattr, player, &callbacks);
 
@@ -261,6 +271,10 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
 //         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(s)),
 //         info.available, available_usec);
 
+  update_timing(player);
+
+  size_t frame_size = pa_frame_size(&player->timing.ss);
+
   while (writable > 0) {
     int pos = cache_pos(player->cache, 0);
     struct audio_frame *frame = player->cache->frames[pos];
@@ -275,21 +289,44 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
       break;
     }
 
-    bool consumed = true;
-    void *data = frame->readptr;
-    size_t length = frame->audio_length;
+    SRC_DATA src_data = {
+      .data_in = frame->readptr,
+      .input_frames = frame->audio_length / frame_size,
+      .src_ratio = player->timing.ratio,
+      .end_of_input = frame->halt,
+    };
 
-    if (writable < frame->audio_length) {
-      consumed = false;
-      length = writable;
-      frame->readptr = (uint8_t*)frame->readptr + length;
-      frame->audio_length -= length;
+    size_t out_size = writable;
+
+    pa_stream_begin_write(s, &src_data.data_out, &out_size);
+
+    src_data.output_frames = out_size / frame_size;
+
+    assert(out_size == writable);
+
+    src_process(player->src, &src_data);
+
+    //printf("in %d used %d. out %d gen %d\n", src_data.input_frames, src_data.input_frames_used,
+  //         src_data.output_frames, src_data.output_frames_gen);
+
+    pa_stream_write(s, src_data.data_out, src_data.output_frames_gen * frame_size, NULL, 0LL, PA_SEEK_RELATIVE);
+
+    // TODO check how much src actually consumed
+
+    size_t bytes_consumed = src_data.input_frames_used * frame_size;
+    size_t leftover = frame->audio_length - bytes_consumed;
+
+    bool consumed = leftover == 0;
+
+    if (!consumed) {
+      frame->readptr = (uint8_t*)frame->readptr + bytes_consumed;
+      frame->audio_length -= bytes_consumed;
     }
 
-    pa_stream_write(s, data, length, NULL, 0LL, PA_SEEK_RELATIVE);
+    written += src_data.input_frames_used * frame_size;
+    writable -= src_data.output_frames_gen * frame_size;
 
-    written += length;
-    writable -= length;
+    assert(writable >= 0);
 
     if (consumed) {
       bool halt = frame->halt;
@@ -315,7 +352,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
     return;
   }
 
-  //printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(s)));
+//  printf("written %i byte, %uusec\n", written, pa_bytes_to_usec(written, pa_stream_get_sample_spec(s)));
 }
 
 struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct timespec *ts) {
@@ -370,13 +407,7 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
   clock->ts_local_last = ts_local;
   clock->ts_remote_last = successor->ts_network;
 
-  double a = delta_remote / (double)delta_local;
-
-  // If clocks are off by more than 5% one of them is probably still unstable.
-//  if (fabs(a - 1) > 0.5) {
-  //  printf("ratio too large: %f\n", a);
-    //return;
-  //}
+  uint64_t elapsed_local = ts_local - clock->ts_local_0;
 
   if (clock->invalid) {
     clock->ts_remote = 0;
@@ -391,25 +422,16 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
     return;
   }
 
-  uint64_t elapsed_local = ts_local - clock->ts_local_0;
 //  printf("%" PRIu64 "\t%" PRIu64 " %d\t", elapsed_local, clock->ts_remote, delta_remote);
 
   kalman2d_run(&clock->filter, delta_local, clock->ts_remote);
 // printf("%f\n", kalman2d_get_v(&clock->filter));
 
   if (kalman2d_get_p(&clock->filter) < 0.001) {
+    // TODO figure out what to do without network timestamps
     frame->ts_due_usec = clock->ts_local_0 + kalman2d_get_v(&clock->filter) * elapsed_local;
     frame->timestamp_is_good = true;
   }
-
-  return;
-
-    // TODO can we do netlocal ratio calculation here?
-    // TODO needs three frames (predecessor and successor)
-    // TODO HALT frame should reset timing, also reset on large gap?
-    // TODO also reset on samplerate family change
-    // TODO maybe reset when cache is empty?
-    // TODO the kalman filter is a property of the cache
 }
 
 bool process_frame(player_t *player, struct audio_frame *frame) {
@@ -485,16 +507,18 @@ void update_timing(player_t *player) {
     double ratio = kalman2d_get_v(&player->remote_clock.filter) / kalman2d_get_v(&player->timing.pa_filter);
     double rate = player->timing.ss.rate * kalman2d_get_v(&player->remote_clock.filter) / 0.999980;
 
-    printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\n",
+    printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\t%d\n",
            kalman2d_get_v(&player->remote_clock.filter), kalman2d_get_p(&player->remote_clock.filter),
            kalman2d_get_v(&player->timing.pa_filter), kalman2d_get_p(&player->timing.pa_filter),
            ratio, rate,
-           netclk_offset, paclk_offset, netclk_offset + paclk_offset);
+           netclk_offset, paclk_offset, netclk_offset + paclk_offset, delta);
 
     //printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\t (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
     //       player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
     //       alr, alr_error, ratio, ratio_error,
     //       rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
-    pa_stream_update_sample_rate(player->pulse.stream, rate + 0.5, NULL, NULL);
+
+    player->timing.ratio = 1/ratio;
+//    pa_stream_update_sample_rate(player->pulse.stream, rate + 0.5, NULL, NULL);
   }
 }

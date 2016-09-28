@@ -119,8 +119,14 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     info.available += frame->audio_length;
 
-    if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0 && frame->timestamp_is_good) {
-      int64_t ts = frame->ts_due_usec - pa_bytes_to_usec(info.available, &frame->ss);
+    if (!frame->resent && frame->audio == frame->readptr && frame->audio_length > 0 &&
+        (!frame->timestamped || frame->timestamp_is_good)) {
+      int64_t ts;
+
+      if (frame->timestamped)
+        ts = frame->ts_due_usec - pa_bytes_to_usec(info.available, &frame->ss);
+      else
+        ts = frame->ts_recv_usec - pa_bytes_to_usec(info.available, &frame->ss);
 
       double d;
 

@@ -11,6 +11,7 @@ struct audio_frame {
   uint64_t ts_media;
   uint64_t ts_due_usec;
   uint64_t net_offset;
+  int bitdepth;
   unsigned int seqnum;
   pa_sample_spec ss;
   int latency;

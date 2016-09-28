@@ -45,9 +45,10 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
   if (aframe == NULL)
     return NULL;
 
+  unsigned int framecount = ntohs(frame->samplecount);
+
   aframe->seqnum = ntohl(frame->frame);
   aframe->latency = ntohl(frame->media_latency);
-  aframe->audio_length = frame->channels * frame->bitdepth * ntohs(frame->samplecount) / 8;
   aframe->halt = frame->flags & OHM1_FLAG_HALT;
   aframe->resent = frame->flags & OHM1_FLAG_RESENT;
   aframe->timestamped = frame->flags & OHM1_FLAG_TIMESTAMPED;
@@ -58,8 +59,13 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
     return NULL;
   }
 
+  aframe->ss.format = PA_SAMPLE_FLOAT32LE;
+  aframe->bitdepth = frame->bitdepth;
+
   aframe->ts_network = ntohl(frame->network_timestamp);
   aframe->ts_media = ntohl(frame->media_timestamp);
+
+  aframe->audio_length = pa_frame_size(&aframe->ss) * framecount;
 
   aframe->audio = malloc(aframe->audio_length);
   aframe->readptr = aframe->audio;
@@ -69,7 +75,30 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
     return NULL;
   }
 
-  memcpy(aframe->audio, frame->data + frame->codec_length, aframe->audio_length);
+  unsigned int samplecount = framecount * aframe->ss.channels;
+  uint8_t *src = frame->data + frame->codec_length;
+  float *dst = aframe->audio;
+
+  switch (aframe->bitdepth) {
+    case 24:
+      for (size_t i = 0; i < samplecount; i++) {
+        int32_t s = src[3 * i + 0] << 24 | src[3 * i + 1] << 16 | src[3 * i + 2] << 8;
+        *dst++ = s * (1.0f / (1U << 31));
+      }
+      break;
+    case 16:
+      for (size_t i = 0; i < samplecount; i++) {
+        int32_t s = src[2 * i + 0] << 24 | src[2 * i + 1] << 16;
+        *dst++ = s * (1.0f / (1U << 31));
+      }
+      break;
+  }
+
+//  memcpy(aframe->audio, frame->data + frame->codec_length, aframe->audio_length);
+
+
+  // TODO convert from bitdepth to float here
+
 
   return aframe;
 }

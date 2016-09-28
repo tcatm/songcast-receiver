@@ -2,6 +2,7 @@
 
 #include <time.h>
 #include <stdint.h>
+#include <samplerate.h>
 
 #include "ohm_v1.h"
 #include "output.h"
@@ -41,6 +42,7 @@ struct timing {
   size_t pa_offset_bytes;
   size_t written;
   pa_sample_spec ss;
+  double ratio;
 
   uint64_t local_last;
 
@@ -54,6 +56,7 @@ typedef struct {
   struct pulse pulse;
   struct timing timing;
   struct remote_clock remote_clock;
+  SRC_STATE *src;
 } player_t;
 
 void player_init(player_t *player);

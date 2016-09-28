@@ -86,7 +86,7 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
   printf("Stream created (%s)\n", format);
 
   pa_stream_flags_t stream_flags;
-  stream_flags =  PA_STREAM_NOT_MONOTONIC | PA_STREAM_VARIABLE_RATE |
+  stream_flags =  PA_STREAM_NOT_MONOTONIC |
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
 
   // Connect stream to the default audio output sink
