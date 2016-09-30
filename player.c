@@ -20,6 +20,8 @@
 #define CACHE_SIZE 2000 // frames
 #define BUFFER_LATENCY 60e3 // 60ms buffer latency
 
+FILE *logfile, *clockfile;
+
 // prototypes
 bool process_frame(player_t *player, struct audio_frame *frame);
 void play_audio(player_t *player, pa_stream *s, size_t writable);
@@ -37,10 +39,10 @@ void write_cb(pa_stream *s, size_t request, void *userdata) {
 
   write_data(player, s, request);
 
-//  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
+  pa_operation *o = pa_stream_update_timing_info(s, NULL, NULL);
 
-//  if (o != NULL)
-//    pa_operation_unref(o);
+  if (o != NULL)
+    pa_operation_unref(o);
 
   pthread_mutex_unlock(&player->mutex);
 }
@@ -117,6 +119,9 @@ void stop(player_t *player) {
 }
 
 void player_init(player_t *player) {
+  logfile = fopen("logfile", "w");
+  clockfile = fopen("clockfile", "w");
+
   pthread_mutex_init(&player->mutex, NULL);
 
   reset_remote_clock(&player->remote_clock);
@@ -160,7 +165,7 @@ void try_prepare(player_t *player) {
   };
 
   reset_remote_clock(&player->remote_clock);
-  kalman2d_init(&player->timing.pa_filter, (mat2d){0, 0, 1, 0}, (mat2d){1000, 0, 0, 1000}, 25);
+  kalman2d_init(&player->timing.pa_filter, (mat2d){0, 0, 1, 0}, (mat2d){1000, 0, 0, 0.0001}, 10);
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -197,8 +202,8 @@ static bool prepare_for_start(player_t *player, size_t request) {
   int playback_latency = ti->sink_usec + ti->transport_usec +
                          pa_bytes_to_usec(ti->write_index - ti->read_index, ss);
 
-  uint64_t start_at = info.start + info.latency_usec;
-  uint64_t play_at = ts + playback_latency;
+  uint64_t start_at = info.start + info.latency_usec / kalman2d_get_v(&player->remote_clock.filter);
+  uint64_t play_at = ts + playback_latency / kalman2d_get_v(&player->timing.pa_filter);
   int delta = play_at - start_at;
 
   printf("Request for %zd bytes), can start at %ld, would play at %ld, in %d usec\n", request, start_at, play_at, delta);
@@ -216,6 +221,8 @@ static bool prepare_for_start(player_t *player, size_t request) {
   }
 
   printf("Request can be fullfilled.\n");
+
+  player->timing.start_play_usec = play_at;
 
   trim_cache(player->cache, skip);
   return true;
@@ -271,7 +278,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
 //         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(s)),
 //         info.available, available_usec);
 
-  update_timing(player);
+  //update_timing(player);
 
   size_t frame_size = pa_frame_size(&player->timing.ss);
 
@@ -407,13 +414,24 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
   clock->ts_local_last = ts_local;
   clock->ts_remote_last = successor->ts_network;
 
+  double ratio = abs(delta_local - delta_remote) / (double)delta_remote;
+
+  // If both clocks differ by more than 5% skip this frame.
+  if (ratio > 0.05) {
+    clock->delta += delta_local;
+    return;
+  }
+
+  delta_local += clock->delta;
+  clock->delta = 0;
+
   uint64_t elapsed_local = ts_local - clock->ts_local_0;
 
   if (clock->invalid) {
     clock->ts_remote = 0;
     clock->ts_local_0 = ts_local;
     clock->invalid = false;
-    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){5, 0, 0, 0.0001}, 490);
+    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){5, 0, 0, 0.0001}, 20);
     return;
   }
 
@@ -425,11 +443,17 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
 //  printf("%" PRIu64 "\t%" PRIu64 " %d\t", elapsed_local, clock->ts_remote, delta_remote);
 
   kalman2d_run(&clock->filter, delta_local, clock->ts_remote);
+
+  fprintf(clockfile, "%f %f %f %f %f\n",
+          (double)delta_local, (double)delta_remote, (double)clock->ts_remote,
+          kalman2d_get_x(&clock->filter), kalman2d_get_v(&clock->filter)
+         );
+  fflush(clockfile);
 // printf("%f\n", kalman2d_get_v(&clock->filter));
 
   if (kalman2d_get_p(&clock->filter) < 0.001) {
     // TODO figure out what to do without network timestamps
-    frame->ts_due_usec = clock->ts_local_0 + kalman2d_get_v(&clock->filter) * elapsed_local;
+    frame->ts_due_usec = clock->ts_local_0 + kalman2d_get_x(&clock->filter) / kalman2d_get_v(&clock->filter);
     frame->timestamp_is_good = true;
   }
 }
@@ -485,9 +509,10 @@ void update_timing(player_t *player) {
   int playback_latency = ti.sink_usec + ti.transport_usec +
                          pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
 
-  uint64_t start_at = info.start + info.latency_usec;
+  // TODO abstract this start_at, play_at foo so it can be used in prepare_for_start and here
 
-  uint64_t play_at = ts + playback_latency;
+  uint64_t start_at = info.start + info.latency_usec / kalman2d_get_v(&player->remote_clock.filter);
+  uint64_t play_at = ts + playback_latency / kalman2d_get_v(&player->timing.pa_filter); // TODO this is subject to audio latency
   int delta = play_at - start_at;
 
   if (player->timing.pa_offset_bytes == 0) {
@@ -501,17 +526,36 @@ void update_timing(player_t *player) {
     kalman2d_run(&player->timing.pa_filter, delta_local, elapsed_audio);
     player->timing.local_last = ts;
 
-    double netclk_offset = kalman2d_get_x(&player->remote_clock.filter) - (player->remote_clock.ts_local_last - player->remote_clock.ts_local_0);
-    double paclk_offset = kalman2d_get_x(&player->timing.pa_filter) - (ts - player->timing.start_local_usec);
+    double netclk_offset = kalman2d_get_x(&player->remote_clock.filter) / kalman2d_get_v(&player->remote_clock.filter) - (ts - player->remote_clock.ts_local_0);
+    double paclk_offset = kalman2d_get_x(&player->timing.pa_filter) / kalman2d_get_v(&player->timing.pa_filter) - (ts - player->timing.start_local_usec);
 
     double ratio = kalman2d_get_v(&player->remote_clock.filter) / kalman2d_get_v(&player->timing.pa_filter);
-    double rate = player->timing.ss.rate * kalman2d_get_v(&player->remote_clock.filter) / 0.999980;
+    double rate = player->timing.ss.rate * ratio;
 
-    printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\t%d\n",
+    //int64_t foo = player->remote_clock.ts_local_0 + kalman2d_get_x(&player->remote_clock.filter - (player->timing.start_play_usec);
+    uint64_t now = now_usec();
+    int64_t playtime = player->timing.start_play_usec + pa_bytes_to_usec(player->timing.written, &player->timing.ss);
+    int64_t remtime = player->remote_clock.ts_local_0 + (now - player->remote_clock.ts_local_0) * kalman2d_get_v(&player->remote_clock.filter);
+    int64_t foo = playtime - remtime;
+
+    fprintf(logfile, "%f %f %f %f %f %f %f %f\n",
+            (double)ts - player->timing.start_local_usec,
+            kalman2d_get_x(&player->remote_clock.filter) / kalman2d_get_v(&player->remote_clock.filter),
+            kalman2d_get_x(&player->timing.pa_filter) / kalman2d_get_v(&player->timing.pa_filter),
+            (double)pa_bytes_to_usec(player->timing.written, &player->timing.ss) / kalman2d_get_v(&player->timing.pa_filter),
+            elapsed_audio,
+            (double)start_at - player->timing.start_local_usec,
+            (double)play_at - player->timing.start_local_usec,
+            (double)netclk_offset + paclk_offset
+           );
+
+    fflush(logfile);
+
+    printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\t%" PRId64 "\t%d\n",
            kalman2d_get_v(&player->remote_clock.filter), kalman2d_get_p(&player->remote_clock.filter),
            kalman2d_get_v(&player->timing.pa_filter), kalman2d_get_p(&player->timing.pa_filter),
            ratio, rate,
-           netclk_offset, paclk_offset, netclk_offset + paclk_offset, delta);
+           netclk_offset, paclk_offset, netclk_offset + paclk_offset, foo, delta);
 
     //printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\t (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
     //       player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
@@ -519,6 +563,5 @@ void update_timing(player_t *player) {
     //       rtp, player->timing.kalman_rtp.error, delta, rate, rate_error, dhz);
 
     player->timing.ratio = 1/ratio;
-//    pa_stream_update_sample_rate(player->pulse.stream, rate + 0.5, NULL, NULL);
   }
 }

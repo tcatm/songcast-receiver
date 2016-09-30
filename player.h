@@ -30,6 +30,7 @@ struct remote_clock {
   uint64_t ts_local_last;
   uint64_t ts_local_0;
   uint64_t ts_remote;
+  int delta;
 
   kalman2d_t filter;
 
@@ -37,6 +38,7 @@ struct remote_clock {
 };
 
 struct timing {
+  uint64_t start_play_usec;
   int64_t start_local_usec;
   int64_t last_frame_ts;
   size_t pa_offset_bytes;
