@@ -198,12 +198,18 @@ static bool prepare_for_start(player_t *player, size_t request) {
 
   struct cache_info info = cache_continuous_size(player->cache);
 
+  // TODO how many frames are in the cache that could be used for clock smoothing?
+
   uint64_t ts = (uint64_t)ti->timestamp.tv_sec * 1000000 + ti->timestamp.tv_usec;
   int playback_latency = ti->sink_usec + ti->transport_usec +
                          pa_bytes_to_usec(ti->write_index - ti->read_index, ss);
 
+  // TODO remote_clock.filter might be invalid. can we ensure v = 1 in case if a non timestamped stream?
   uint64_t start_at = info.start + info.latency_usec / kalman2d_get_v(&player->remote_clock.filter);
   uint64_t play_at = ts + playback_latency / kalman2d_get_v(&player->timing.pa_filter);
+
+  // TODO below this line only start_at, play_at and info.available are used.
+
   int delta = play_at - start_at;
 
   printf("Request for %zd bytes), can start at %ld, would play at %ld, in %d usec\n", request, start_at, play_at, delta);
@@ -511,6 +517,9 @@ void update_timing(player_t *player) {
                          pa_bytes_to_usec(ti.write_index - ti.read_index, ss);
 
   // TODO abstract this start_at, play_at foo so it can be used in prepare_for_start and here
+  //      basically we need: ts, start_at, play_at, delta
+  //      it kind of enhances struct cache_info
+  //      can we feed cache_continuous_size clock information?
 
   uint64_t start_at = info.start + info.latency_usec / kalman2d_get_v(&player->remote_clock.filter);
   uint64_t play_at = ts + playback_latency / kalman2d_get_v(&player->timing.pa_filter); // TODO this is subject to audio latency
