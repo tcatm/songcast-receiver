@@ -27,7 +27,12 @@
       maybe unref stream in main thread?
 - [X] use network timestamps if present, probably during parsing?
 - [X] remote clock may be unstable initially!
+- [ ] seperate stream tracking (clock, format changes, cache, ...) from playback (play_audio, underflow, ...)
+      there could a be a stream with an associated cache and remote_clock
+      streams are played in a queue
 - [ ] make robust again
+- [ ] 2d kalman filter on delta
+- [ ] lowpass on filtered delta to adjust samplerate ever so slightly
 - [ ] search for audio from end of cache? (format change)
 - [ ] a periodic timer may be useful to handle HALTs when no data is coming in
 - [ ] make output.c robust against all kinds of pulseaudio fuckups
@@ -48,13 +53,9 @@
 - [ ] clean shutdown on ctrl-c, send leave message
 - [ ] check whether destination multicast group matches
 - [ ] move data used by write_data thread into it's own struct
-- [ ] PLL für remote clock ist wichtig, um jitter zu minimieren
-- [ ] average remote clock over last 60s
 - [ ] clearly mark data that is accessed from the playback thread (e.g. separate struct)
 - [ ] can CACHE_SIZE be reduced?
-- [ ] track timestamp of oldest element in cache
 - [ ] use monotonic clock
-- [ ] synchronize playback by tweaking the samplerate a little (less then 0.1%, define a maximum acceptable drift)
 - [ ] resampling should be optional
 - [ ] display codec name
 - [ ] display track and metadata
