@@ -20,7 +20,7 @@ struct cache_info {
   bool format_change;
   bool timestamped;
   bool has_timing;
-  int latency_usec;
+  double latency_usec;
 };
 
 struct cache {

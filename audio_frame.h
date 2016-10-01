@@ -26,6 +26,6 @@ struct audio_frame {
 };
 
 bool same_format(struct audio_frame *a, struct audio_frame *b);
-uint64_t latency_to_usec(int samplerate, uint64_t latency);
+double latency_to_usec(int samplerate, int64_t latency);
 void free_frame(struct audio_frame *frame);
 struct audio_frame *parse_frame(ohm1_audio *frame);

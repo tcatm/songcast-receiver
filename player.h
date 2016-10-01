@@ -29,7 +29,7 @@ struct remote_clock {
   unsigned int ts_remote_last;
   uint64_t ts_local_last;
   uint64_t ts_local_0;
-  uint64_t ts_remote;
+  double ts_remote;
   int delta;
 
   kalman2d_t filter;

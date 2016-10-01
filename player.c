@@ -406,8 +406,8 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
   if (delta_remote_raw < 0)
     delta_remote_raw += 1ULL<<32;
 
-  int delta_local = ts_local - clock->ts_local_last;
-  int delta_remote = latency_to_usec(successor->ss.rate, delta_remote_raw);
+  double delta_local = ts_local - clock->ts_local_last;
+  double delta_remote = latency_to_usec(successor->ss.rate, delta_remote_raw);
 
   clock->ts_remote += delta_remote;
 
@@ -538,7 +538,7 @@ void update_timing(player_t *player) {
     int64_t remtime = player->remote_clock.ts_local_0 + (now - player->remote_clock.ts_local_0) * kalman2d_get_v(&player->remote_clock.filter);
     int64_t foo = playtime - remtime;
 
-    fprintf(logfile, "%f %f %f %f %f %f %f %f\n",
+    fprintf(logfile, "%f %f %f %f %f %f %f %f %f\n",
             (double)ts - player->timing.start_local_usec,
             kalman2d_get_x(&player->remote_clock.filter) / kalman2d_get_v(&player->remote_clock.filter),
             kalman2d_get_x(&player->timing.pa_filter) / kalman2d_get_v(&player->timing.pa_filter),
@@ -546,7 +546,8 @@ void update_timing(player_t *player) {
             elapsed_audio,
             (double)start_at - player->timing.start_local_usec,
             (double)play_at - player->timing.start_local_usec,
-            (double)netclk_offset + paclk_offset
+            (double)netclk_offset + paclk_offset,
+            (double)delta
            );
 
     fflush(logfile);

@@ -9,9 +9,9 @@ bool same_format(struct audio_frame *a, struct audio_frame *b) {
   return pa_sample_spec_equal(&a->ss, &b->ss) && a->latency == b->latency;
 }
 
-uint64_t latency_to_usec(int samplerate, uint64_t latency) {
-  int multiplier = (samplerate%441) == 0 ? 44100 : 48000;
-  return latency * 1000000 / (256 * multiplier);
+double latency_to_usec(int samplerate, int64_t latency) {
+  double multiplier = (samplerate%441) == 0 ? 44100 : 48000;
+  return latency * 1000000.0 / (256.0 * multiplier);
 }
 
 void free_frame(struct audio_frame *frame) {
