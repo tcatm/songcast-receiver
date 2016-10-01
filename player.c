@@ -408,7 +408,7 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
   uint64_t ts_local = frame->ts_recv_usec;
   int delta_remote_raw = successor->ts_network - clock->ts_remote_last;
 
-  // Assume wrap around if delta is negativ.
+  // Assume wrap around if delta is negative.
   if (delta_remote_raw < 0)
     delta_remote_raw += 1ULL<<32;
 
