@@ -431,7 +431,8 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
     clock->ts_remote = 0;
     clock->ts_local_0 = ts_local;
     clock->invalid = false;
-    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){5, 0, 0, 0.0001}, 20);
+    // TODO determine good values here...
+    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){0, 0, 0, 0.0001}, 300);
     return;
   }
 
