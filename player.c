@@ -18,7 +18,7 @@
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 // TODO determine BUFFER_LATENCY automagically
 #define CACHE_SIZE 2000 // frames
-#define BUFFER_LATENCY 60e3 // 60ms buffer latency
+#define BUFFER_LATENCY 2e3 // 60ms buffer latency
 
 FILE *logfile, *clockfile;
 
@@ -55,6 +55,7 @@ void underflow_cb(pa_stream *s, void *userdata) {
   printf("Underflow!\n");
 
   pthread_mutex_lock(&player->mutex);
+  print_cache(player->cache);
   set_state(player, HALT);
   pthread_mutex_unlock(&player->mutex);
 }
@@ -62,7 +63,10 @@ void underflow_cb(pa_stream *s, void *userdata) {
 void latency_cb(pa_stream *s, void *userdata) {
   player_t *player = userdata;
 
-  assert(s == player->pulse.stream);
+  if (s != player->pulse.stream) {
+    printf("Wrong stream!\n");
+    return;
+  }
 
   pthread_mutex_lock(&player->mutex);
   update_timing(player);
@@ -166,6 +170,7 @@ void try_prepare(player_t *player) {
 
   reset_remote_clock(&player->remote_clock);
   kalman2d_init(&player->timing.pa_filter, (mat2d){0, 0, 1, 0}, (mat2d){1000, 0, 0, 0.0001}, 10);
+  kalman2d_init(&player->timing.delta_filter, (mat2d){0, 0, 0, 0}, (mat2d){1000, 0, 0, 0.0001}, 10);
 
   pa_buffer_attr bufattr = {
     .maxlength = -1,
@@ -177,7 +182,7 @@ void try_prepare(player_t *player) {
   pthread_mutex_unlock(&player->mutex);
 
   int error;
-  player->src = src_new(SRC_SINC_BEST_QUALITY, start->ss.channels, &error);
+  player->src = src_new(SRC_SINC_MEDIUM_QUALITY, start->ss.channels, &error);
   assert(player->src != NULL);
 
   SRC_STATE* src_new (int converter_type, int channels, int *error) ;
@@ -222,6 +227,7 @@ static bool prepare_for_start(player_t *player, size_t request) {
   printf("Need to skip %zd bytes, have %zd bytes\n", skip, info.available);
 
   if (info.available < request + skip) {
+    print_cache(player->cache);
     printf("Not enough data in buffer to start (missing %zd bytes)\n", request - skip - info.available);
     return false;
   }
@@ -283,8 +289,6 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
   //printf("asked for %6i (%6iusec), available %6i (%6iusec)\n",
 //         writable, pa_bytes_to_usec(writable, pa_stream_get_sample_spec(s)),
 //         info.available, available_usec);
-
-  //update_timing(player);
 
   size_t frame_size = pa_frame_size(&player->timing.ss);
 
@@ -438,7 +442,7 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
     clock->ts_local_0 = ts_local;
     clock->invalid = false;
     // TODO determine good values here...
-    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){0, 0, 0, 0.0001}, 300);
+    kalman2d_init(&clock->filter, (mat2d){0, 0, 1, 0}, (mat2d){1, 0, 0, 0.0001}, 250);
     return;
   }
 
@@ -455,7 +459,7 @@ void estimate_remote_clock(struct remote_clock *clock, struct audio_frame *frame
           (double)delta_local, (double)delta_remote, (double)clock->ts_remote,
           kalman2d_get_x(&clock->filter), kalman2d_get_v(&clock->filter)
          );
-  fflush(clockfile);
+//  fflush(clockfile);
 // printf("%f\n", kalman2d_get_v(&clock->filter));
 
   if (kalman2d_get_p(&clock->filter) < 0.001) {
@@ -534,6 +538,7 @@ void update_timing(player_t *player) {
     double elapsed_audio = pa_bytes_to_usec(ti.read_index - player->timing.pa_offset_bytes, ss);
     double delta_local = ts - player->timing.local_last;
     kalman2d_run(&player->timing.pa_filter, delta_local, elapsed_audio);
+    kalman2d_run(&player->timing.delta_filter, 0, delta);
     player->timing.local_last = ts;
 
     double netclk_offset = kalman2d_get_x(&player->remote_clock.filter) / kalman2d_get_v(&player->remote_clock.filter) - (ts - player->remote_clock.ts_local_0);
@@ -548,7 +553,7 @@ void update_timing(player_t *player) {
     int64_t remtime = player->remote_clock.ts_local_0 + (now - player->remote_clock.ts_local_0) * kalman2d_get_v(&player->remote_clock.filter);
     int64_t foo = playtime - remtime;
 
-    fprintf(logfile, "%f %f %f %f %f %f %f %f %f\n",
+    fprintf(logfile, "%f %f %f %f %f %f %f %f %f %f\n",
             (double)ts - player->timing.start_local_usec,
             kalman2d_get_x(&player->remote_clock.filter) / kalman2d_get_v(&player->remote_clock.filter),
             kalman2d_get_x(&player->timing.pa_filter) / kalman2d_get_v(&player->timing.pa_filter),
@@ -557,17 +562,18 @@ void update_timing(player_t *player) {
             (double)start_at - player->timing.start_local_usec,
             (double)play_at - player->timing.start_local_usec,
             (double)netclk_offset + paclk_offset,
-            (double)delta
+            (double)delta,
+            kalman2d_get_x(&player->timing.delta_filter)
            );
 
-    fflush(logfile);
-
+//    fflush(logfile);
+/*
     printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\t%" PRId64 "\t%d\n",
            kalman2d_get_v(&player->remote_clock.filter), kalman2d_get_p(&player->remote_clock.filter),
            kalman2d_get_v(&player->timing.pa_filter), kalman2d_get_p(&player->timing.pa_filter),
            ratio, rate,
            netclk_offset, paclk_offset, netclk_offset + paclk_offset, foo, delta);
-
+*/
     //printf("nlr %.6f±%.6f\talr %.6f±%.6f\tratio %.6f±%.6f\t (%d) usec\trate %f±%f Hz (\tΔ %f Hz)\t\n",
     //       player->timing.kalman_netlocal_ratio.est, player->timing.kalman_netlocal_ratio.error,
     //       alr, alr_error, ratio, ratio_error,

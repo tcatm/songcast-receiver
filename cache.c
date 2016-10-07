@@ -207,8 +207,10 @@ struct missing_frames *request_frames(struct cache *cache) {
   int end = cache->latest_index;
   for (int index = 0; index <= end; index++) {
     int pos = cache_pos(cache, index);
-    if (cache->frames[pos] == NULL)
+    if (cache->frames[pos] == NULL) {
       d->seqnums[d->count++] = (long long int)index + cache->start_seqnum;
+      printf("misssing frame!\n");
+    }
   }
 
   if (d->count == 0) {

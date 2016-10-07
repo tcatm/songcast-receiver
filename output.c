@@ -143,20 +143,10 @@ void stop_stream(struct pulse *pulse) {
   // TODO drain stream. this seems to cause deadlocks.
 
   pa_threaded_mainloop_lock(pulse->mainloop);
+  pa_stream_set_write_callback(pulse->stream, NULL, NULL);
+  pa_stream_set_state_callback(pulse->stream, NULL, NULL);
+  pa_stream_set_latency_update_callback(pulse->stream, NULL, NULL);
   pa_stream_disconnect(pulse->stream);
-
-  for (;;) {
-    pa_stream_state_t state;
-
-    state = pa_stream_get_state(pulse->stream);
-
-    if (state == PA_STREAM_TERMINATED)
-      break;
-
-    /* Wait until the stream has terminated. */
-    pa_threaded_mainloop_wait(pulse->mainloop);
-  }
-
   pa_stream_unref(pulse->stream);
   pa_threaded_mainloop_unlock(pulse->mainloop);
 

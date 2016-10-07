@@ -27,12 +27,15 @@
       maybe unref stream in main thread?
 - [X] use network timestamps if present, probably during parsing?
 - [X] remote clock may be unstable initially!
+- [ ] can I put all relevant stream data into the userdata? i.e. associate a cache/pipeline with the stream?
 - [ ] seperate stream tracking (clock, format changes, cache, ...) from playback (play_audio, underflow, ...)
       there could a be a stream with an associated cache and remote_clock
       streams are played in a queue
 - [ ] make robust again
-- [ ] 2d kalman filter on delta
-- [ ] lowpass on filtered delta to adjust samplerate ever so slightly
+- [ ] lowpass on delta. how to lowpass with no fixed sample rate?
+- [ ] use lowpass delta to adjust samplerate ever so slightly
+- [ ] wtf is now happening on underflows? dump cache! what else is happening to the audio buffer?
+- [ ] optimize play_audio function as much as possible
 - [ ] search for audio from end of cache? (format change)
 - [ ] a periodic timer may be useful to handle HALTs when no data is coming in
 - [ ] make output.c robust against all kinds of pulseaudio fuckups
