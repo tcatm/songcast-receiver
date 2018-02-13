@@ -205,7 +205,12 @@ static bool prepare_for_start(player_t *player, size_t request) {
                          pa_bytes_to_usec(ti->write_index - ti->read_index, ss);
 
   // TODO remote_clock.filter might be invalid. can we ensure v = 1 in case if a non timestamped stream?
-  uint64_t start_at = info.start + info.latency_usec / kalman2d_get_v(&player->remote_clock.filter);
+  uint64_t start_at;
+  if (&player->remote_clock.invalid)
+    start_at = info.start + info.latency_usec;
+  else
+    start_at = info.start + info.latency_usec / kalman2d_get_v(&player->remote_clock.filter);
+
   uint64_t play_at = ts + playback_latency / kalman2d_get_v(&player->timing.pa_filter);
 
   // TODO below this line only start_at, play_at and info.available are used.
@@ -305,7 +310,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
     SRC_DATA src_data = {
       .data_in = frame->readptr,
       .input_frames = frame->audio_length / frame_size,
-      .src_ratio = player->timing.ratio,
+      .src_ratio = 1, //player->timing.ratio,
       .end_of_input = frame->halt,
     };
 
@@ -474,7 +479,7 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   if (index < 0)
     return false;
 
-  //printf("Handling frame %i %s\n", frame->seqnum, frame->resent ? "(resent)" : "");
+  printf("Handling frame %i %s %s\n", frame->seqnum, frame->resent ? "(resent)" : "", frame->timestamped ? ("timestamped") : "no_timestamp");
 
   if (player->cache->frames[pos] != NULL)
     return false;
@@ -539,7 +544,12 @@ void update_timing(player_t *player) {
     double netclk_offset = kalman2d_get_x(&player->remote_clock.filter) / kalman2d_get_v(&player->remote_clock.filter) - (ts - player->remote_clock.ts_local_0);
     double paclk_offset = kalman2d_get_x(&player->timing.pa_filter) / kalman2d_get_v(&player->timing.pa_filter) - (ts - player->timing.start_local_usec);
 
-    double ratio = kalman2d_get_v(&player->remote_clock.filter) / kalman2d_get_v(&player->timing.pa_filter);
+    double ratio;
+    if (!&player->remote_clock.invalid)
+      ratio = kalman2d_get_v(&player->remote_clock.filter) / kalman2d_get_v(&player->timing.pa_filter);
+    else
+      ratio = 1.0 / kalman2d_get_v(&player->timing.pa_filter);
+
     double rate = player->timing.ss.rate * ratio;
 
     //int64_t foo = player->remote_clock.ts_local_0 + kalman2d_get_x(&player->remote_clock.filter - (player->timing.start_play_usec);
@@ -562,7 +572,8 @@ void update_timing(player_t *player) {
 
     fflush(logfile);
 
-    printf("nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\t%" PRId64 "\t%d\n",
+    printf("%4s nlr %.6f±%.10f\talr %.6f±%.10f\tr %.6f %.2f Hz\t%.2f\t%.2f\t%.2f\t%" PRId64 "\t%d\n",
+           &player->remote_clock.invalid ? "" : "sync",
            kalman2d_get_v(&player->remote_clock.filter), kalman2d_get_p(&player->remote_clock.filter),
            kalman2d_get_v(&player->timing.pa_filter), kalman2d_get_p(&player->timing.pa_filter),
            ratio, rate,

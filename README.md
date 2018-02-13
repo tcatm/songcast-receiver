@@ -8,6 +8,14 @@ This is a really simple Songcast receiver for Pulseaudio.
 - libxml2
 - pulseaudio
 
+# Build Dependencies
+
+- cmake
+- libxml2-dev
+- libsamplerate-dev
+- libpulse-dev
+- liburiparser-dev
+
 # Usage
 
 Tune in to a preset number:
