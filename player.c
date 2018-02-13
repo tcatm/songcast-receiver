@@ -479,7 +479,8 @@ bool process_frame(player_t *player, struct audio_frame *frame) {
   if (index < 0)
     return false;
 
-  printf("Handling frame %i %s %s\n", frame->seqnum, frame->resent ? "(resent)" : "", frame->timestamped ? ("timestamped") : "no_timestamp");
+  printf("Handling frame %i %s %s ", frame->seqnum, frame->resent ? "(resent)" : "", frame->timestamped ? ("timestamped") : "no_timestamp");
+  printf("latency: %.0fms\n", latency_to_usec(frame->ss.rate, frame->latency) / 1e3);
 
   if (player->cache->frames[pos] != NULL)
     return false;
