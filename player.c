@@ -310,7 +310,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable) {
     SRC_DATA src_data = {
       .data_in = frame->readptr,
       .input_frames = frame->audio_length / frame_size,
-      .src_ratio = 1, //player->timing.ratio,
+      .src_ratio = player->timing.ratio,
       .end_of_input = frame->halt,
     };
 
@@ -546,7 +546,7 @@ void update_timing(player_t *player) {
     double paclk_offset = kalman2d_get_x(&player->timing.pa_filter) / kalman2d_get_v(&player->timing.pa_filter) - (ts - player->timing.start_local_usec);
 
     double ratio;
-    if (!&player->remote_clock.invalid)
+    if (!player->remote_clock.invalid)
       ratio = kalman2d_get_v(&player->remote_clock.filter) / kalman2d_get_v(&player->timing.pa_filter);
     else
       ratio = 1.0 / kalman2d_get_v(&player->timing.pa_filter);
