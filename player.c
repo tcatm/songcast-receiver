@@ -383,10 +383,10 @@ struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct 
   // TODO incorporate any network latencies and such into ts_due_usec
   aframe->ts_recv_usec = (long long)ts->tv_sec * 1000000 + (ts->tv_nsec + 500) / 1000;
 
-  pthread_mutex_lock(&player->mutex);
-
   if (player->state == HALT)
     stop(player);
+
+  pthread_mutex_lock(&player->mutex);
 
   bool consumed = process_frame(player, aframe);
 
