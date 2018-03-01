@@ -21,6 +21,7 @@
 #include "ohm_v1.h"
 #include "player.h"
 #include "uri.h"
+#include "log.h"
 
 #define OHM_NULL_URI "ohm://0.0.0.0:0"
 
@@ -149,7 +150,7 @@ int open_ohz_socket(void) {
 void send_preset_query(int fd, unsigned int preset) {
   assert(preset != 0);
 
-  printf("Resolving preset %d\n", preset);
+  log_printf("Resolving preset %d", preset);
 
   struct sockaddr_in dst = {
     .sin_family = AF_INET,
@@ -187,7 +188,7 @@ void send_preset_query(int fd, unsigned int preset) {
 
 void send_zone_query(int fd, const char *zone) {
   assert(zone != NULL);
-  printf("Sending zone query: %s\n", zone);
+  log_printf("Sending zone query: %s", zone);
 
   struct sockaddr_in dst = {
     .sin_family = AF_INET,
@@ -376,17 +377,17 @@ void ohm_send_resend_request(int fd, const struct uri *uri, const struct missing
 }
 
 void dump_track(ohm1_track *track) {
-  printf("Track URI: %.*s\n", htonl(track->uri_length), track->data);
-  printf("Track Metadata: %.*s\n", htonl(track->metadata_length), track->data + htonl(track->uri_length));
+  log_printf("Track URI: %.*s", htonl(track->uri_length), track->data);
+  log_printf("Track Metadata: %.*s", htonl(track->metadata_length), track->data + htonl(track->uri_length));
 }
 
 void dump_metatext(ohm1_metatext *meta) {
-  printf("Metatext: %.*s\n", htonl(meta->length), meta->data);
+  log_printf("Metatext: %.*s", htonl(meta->length), meta->data);
 }
 
 void update_slaves(struct ReceiverData *receiver, ohm1_slave *slave) {
   receiver->slave_count = htonl(slave->count);
-  printf("Updating slaves: %d\n", receiver->slave_count);
+  log_printf("Updating slaves: %d", receiver->slave_count);
   free(receiver->my_slaves);
 
   receiver->my_slaves = calloc(receiver->slave_count, sizeof(struct sockaddr_in));
@@ -400,7 +401,7 @@ void update_slaves(struct ReceiverData *receiver, ohm1_slave *slave) {
 
     char slave_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &receiver->my_slaves[i].sin_addr, slave_str, sizeof(slave_str));
-    printf("Slave: %s\n", slave_str);
+    log_printf("Slave: %s", slave_str);
   }
 }
 
@@ -408,7 +409,7 @@ void stop_playback(struct ReceiverData *receiver) {
   if (receiver->ohm_fd == 0)
     return;
 
-  printf("Stopping playback.\n");
+  log_printf("Stopping playback.");
 
   if (receiver->unicast)
     ohm_send_event(receiver->ohm_fd, receiver->uri, OHM1_LEAVE);
@@ -425,7 +426,7 @@ void stop_playback(struct ReceiverData *receiver) {
 }
 
 void play_uri(struct ReceiverData *receiver) {
-  printf("Playing %s://%s:%d/%s\n", receiver->uri->scheme, receiver->uri->host, receiver->uri->port, receiver->uri->path);
+  log_printf("Playing %s://%s:%d/%s", receiver->uri->scheme, receiver->uri->host, receiver->uri->port, receiver->uri->path);
 
   assert(!is_ohm_null_uri(receiver->uri));
 
@@ -550,7 +551,7 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
       // not used by receivers
       break;
     default:
-      printf("Type %i not handled yet\n", hdr->type);
+      log_printf("Type %i not handled yet", hdr->type);
   }
 }
 
@@ -600,12 +601,12 @@ bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
 bool goto_uri(struct ReceiverData *receiver, const char *uri_string) {
   assert(uri_string != NULL);
 
-  printf("goto_uri %s\n", uri_string);
+  log_printf("goto_uri %s", uri_string);
 
   struct uri *uri = parse_uri(uri_string);
 
   if (strcmp(uri->scheme, "ohz") == 0) {
-    printf("Got zone %s\n", uri->path);
+    log_printf("Got zone %s", uri->path);
     free(receiver->zone_id);
     receiver->preset = 0;
     receiver->zone_id = strdup(uri->path);
@@ -624,7 +625,7 @@ bool goto_uri(struct ReceiverData *receiver, const char *uri_string) {
       if (!is_ohm_null_uri(uri))
         play_uri(receiver);
       else
-        printf("Got null URI\n");
+        log_printf("Got null URI");
     } else
       free_uri(uri);
 
@@ -756,6 +757,9 @@ int main(int argc, char *argv[]) {
 
   int preset = 0;
   char *uri = NULL;
+
+  log_init();
+  log_printf("===== START =====");
 
   int c;
   while ((c = getopt(argc, argv, "p:u:")) != -1)

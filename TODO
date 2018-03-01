@@ -67,3 +67,42 @@
 - [ ] when changing PA sinks, invalidate audio_local_ratio!
 - [ ] implement volume control
 - [ ] implement just enough of openhome to allow grouping in kazoo. this could happen outside of the c code by controlling using stdio
+
+- [ ] handle halts within stream (songchange in spotify e.g.)
+
+# HALT frames
+
+- indicate end of stream
+- may be followed by more audio data
+- if following audio data is of same format as current stream we can continue playing
+- if it differs, we can immediately start a new stream
+
+Was muss cache_continuous_size tun?
+
+- das erste zusammenhängende Stück finden, dass abgespielt werden kann.
+- muss nicht unbedingt am Anfang des Caches sein.
+
+Underflows?
+
+Manchmal hängt es auch im stop_stream bei Pulseaudio...
+
+timing.. weiß ich überhaupt wo der aktuelle stream gerade wirklich ist mit der ganzen sampleraten konvertierung?
+
+
+Welche Uhren gibt es alles?
+
+- Die in die Audioausgabe geschriebenen Bytes. Hier ist die Sampleratekonvertierung schon mit drin.
+
+start_play_usec ist der gemeinsame Ursprung für info.start + latency und pa_stream_get_timing_info
+
+halts werden noch nicht sinnvoll behandelt
+
+push ausprobieren und so viele frames wie möglich an pulse pushen?
+
+underflows anders behandeln? schneller wieder einsetzen?
+
+missing frames?
+
+das delta springt manchmal ziemlich stark. woran liegt das?
+
+pulse samplespec kann unterschiedlich sein! output ist float!

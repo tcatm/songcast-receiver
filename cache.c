@@ -2,6 +2,7 @@
 
 #include "cache.h"
 #include "audio_frame.h"
+#include "log.h"
 
 int cache_pos(struct cache *cache, int index) {
   return (index + cache->offset) % cache->size;
@@ -16,7 +17,7 @@ struct cache *cache_init(unsigned int size) {
   cache->start_seqnum = 0;
   cache->offset = 0;
 
-  printf("Cache initialized\n");
+  log_printf("Cache initialized");
 
   return cache;
 }
@@ -35,7 +36,7 @@ void cache_reset(struct cache *cache) {
   cache->start_seqnum = 0;
   cache->offset = 0;
 
-  printf("Cache reset\n");
+  log_printf("Cache reset");
 }
 
 void print_cache(struct cache *cache) {
@@ -139,7 +140,7 @@ struct cache_info cache_continuous_size(struct cache *cache) {
 
     info.latency_usec = latency_to_usec(frame->ss.rate, frame->latency);
 
-    if (frame->halt) {
+    if (frame->halt && (last != NULL && same_format(last, frame))) {
       info.halt_index = index;
       info.halt = true;
       break;
@@ -163,7 +164,7 @@ bool trim_cache(struct cache *cache, size_t trim) {
   if (trim == 0)
     return true;
 
-  printf("Trimming %zd bytes\n", trim);
+  log_printf("Trimming %zd bytes", trim);
 
   int end = cache->latest_index;
   int adjust = 0;

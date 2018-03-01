@@ -38,13 +38,20 @@ struct remote_clock {
 };
 
 struct timing {
+  uint64_t avg_start_at;
+  uint avg_start_at_j;
+  uint64_t avg_play_at;
   uint64_t start_play_usec;
   int64_t start_local_usec;
   int64_t last_frame_ts;
   size_t pa_offset_bytes;
-  size_t written;
+  size_t written_pre, written_post;
   pa_sample_spec ss;
   double ratio;
+  double delta[100];
+  int n_delta;
+
+  double estimated_rate, avg_estimated_rate;
 
   uint64_t local_last;
 

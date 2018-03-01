@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "output.h"
+#include "log.h"
 
 #define CHECK_SUCCESS_GOTO(p, rerror, expression, label)        \
     do {                                                        \
@@ -44,7 +45,7 @@ static void success_cb(pa_stream *s, int success, void *userdata) {
 }
 
 void stream_state_cb(pa_stream *s, void *mainloop) {
-  printf("----------------------------------------- Stream %p ", s);
+/*  printf("----------------------------------------- Stream %p ", s);
 
   switch (pa_stream_get_state(s)) {
     case PA_STREAM_UNCONNECTED:
@@ -65,7 +66,7 @@ void stream_state_cb(pa_stream *s, void *mainloop) {
     default:
       printf("INVALID\n");
   }
-
+*/
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
@@ -83,7 +84,7 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
 
   char format[PA_SAMPLE_SPEC_SNPRINT_MAX];
   pa_sample_spec_snprint(format, sizeof(format), ss);
-  printf("Stream created (%s)\n", format);
+  log_printf("Stream created (%s)", format);
 
   pa_stream_flags_t stream_flags;
   stream_flags =  PA_STREAM_NOT_MONOTONIC |
@@ -134,15 +135,16 @@ void output_init(struct pulse *pulse) {
 
   pa_threaded_mainloop_unlock(pulse->mainloop);
 
-  printf("Pulseaudio ready.\n");
+  log_printf("Pulseaudio ready.");
 }
 
 void stop_stream(struct pulse *pulse) {
-  printf("Disconnecting stream.\n");
+  log_printf("Disconnecting stream.");
 
   // TODO drain stream. this seems to cause deadlocks.
 
   pa_threaded_mainloop_lock(pulse->mainloop);
+  
   pa_stream_disconnect(pulse->stream);
 
   for (;;) {
@@ -162,5 +164,5 @@ void stop_stream(struct pulse *pulse) {
 
   pulse->stream = NULL;
 
-  printf("Stream disconnected.\n");
+  log_printf("Stream disconnected.");
 }

@@ -52,12 +52,9 @@ struct audio_frame *parse_frame(ohm1_audio *frame) {
   aframe->halt = frame->flags & OHM1_FLAG_HALT;
   aframe->resent = frame->flags & OHM1_FLAG_RESENT;
   aframe->timestamped = frame->flags & OHM1_FLAG_TIMESTAMPED;
-  
-  if (aframe->timestamped)
-    printf("Timestamped\n");
 
   if (!frame_to_sample_spec(&aframe->ss, ntohl(frame->samplerate), frame->channels, frame->bitdepth)) {
-    printf("Unsupported sample spec\n");
+    log_printf("Unsupported sample spec");
     free(aframe);
     return NULL;
   }
