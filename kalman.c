@@ -1,14 +1,14 @@
 #include "kalman.h"
 
 static mat2d mat2d_transpose(mat2d m) {
-  return __builtin_shuffle(m, (vector(long, 4)){0, 2, 1, 3});
+  return __builtin_shuffle(m, (vector(long long, 4)){0, 2, 1, 3});
 }
 
 static mat2d mat2d_mul(mat2d a, mat2d b) {
-  mat2d a0 = __builtin_shuffle(a, (vector(long, 4)){0, 0, 2, 2});
-  mat2d b0 = __builtin_shuffle(b, (vector(long, 4)){0, 1, 0, 1});
-  mat2d a1 = __builtin_shuffle(a, (vector(long, 4)){1, 1, 3, 3});
-  mat2d b1 = __builtin_shuffle(b, (vector(long, 4)){2, 3, 2, 3});
+  mat2d a0 = __builtin_shuffle(a, (vector(long long, 4)){0, 0, 2, 2});
+  mat2d b0 = __builtin_shuffle(b, (vector(long long, 4)){0, 1, 0, 1});
+  mat2d a1 = __builtin_shuffle(a, (vector(long long, 4)){1, 1, 3, 3});
+  mat2d b1 = __builtin_shuffle(b, (vector(long long, 4)){2, 3, 2, 3});
 
   return a0 * b0 + a1 * b1;
 }
