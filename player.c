@@ -184,7 +184,7 @@ void try_prepare(player_t *player) {
   pthread_mutex_unlock(&player->mutex);
 
   int error;
-  player->src = src_new(SRC_SINC_BEST_QUALITY, start->ss.channels, &error);
+  player->src = src_new(SRC_SINC_MEDIUM_QUALITY, start->ss.channels, &error);
   assert(player->src != NULL);
 
   SRC_STATE* src_new (int converter_type, int channels, int *error) ;
