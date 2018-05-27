@@ -19,7 +19,11 @@
 // TODO determine CACHE_SIZE dynamically based on latency? 192/24 needs a larger cache
 // TODO determine BUFFER_LATENCY automagically
 #define CACHE_SIZE 500 // frames
-#define BUFFER_LATENCY 50e3 // 50ms buffer latency
+#define BUFFER_LATENCY 80e3 // 50ms buffer latency
+
+#define PLAYER_VOLUME_MAX 100
+#define PLAYER_VOLUME_LIMIT 60
+#define PLAYER_VOLUME_START 20
 
 #define PA_CLAMP(x, low, high) (((x) > (high)) ? (high) : (((x) < (low)) ? (low) : (x)))  
 
@@ -106,6 +110,22 @@ char *print_state(enum PlayerState state) {
   }
 }
 
+void set_volume_limit(player_t *player, int limit) {
+  if (limit < 0)
+    limit = 0;
+
+  if (limit > PLAYER_VOLUME_MAX)
+    limit = PLAYER_VOLUME_MAX;
+
+  player->volume_limit = limit;
+
+  // Reduce volume if limit is less than current volume
+  if (player->volume > limit)
+    player_set_volume(player, limit);
+
+  // TODO emit event
+}
+
 void set_state(player_t *player, enum PlayerState new_state) {
   log_printf("--> State change: %s to %s <--", print_state(player->state), print_state(new_state));
 
@@ -131,7 +151,11 @@ void player_init(player_t *player) {
 
   reset_remote_clock(&player->remote_clock);
   set_state(player, STOPPED);
+  // Set volume limit first, set_volume depends on it!
+  set_volume_limit(player, PLAYER_VOLUME_LIMIT);
+  player_set_volume(player, PLAYER_VOLUME_START);
   player->cache = cache_init(CACHE_SIZE);
+  player->mute = 0;
   output_init(&player->pulse);
 }
 
@@ -147,6 +171,58 @@ void player_stop(player_t *player) {
   cache_reset(player->cache);
 
   pthread_mutex_unlock(&player->mutex);
+}
+
+void player_set_mute(player_t *player, int mute) {
+  player->mute = mute;
+
+  if (player->state != PLAYING)
+    return;
+
+  output_set_mute(&player->pulse, mute);
+
+  // TODO emit event
+}
+
+int player_get_mute(player_t *player) {
+  return player->mute;
+}
+
+void player_set_volume(player_t *player, int volume) {
+  if (volume > player->volume_limit)
+    volume = player->volume_limit;
+
+  if (volume < 0)
+    volume = 0;
+
+  player->volume = volume; 
+
+  if (player->state == PLAYING)
+    output_set_volume(&player->pulse, player->volume);
+
+  log_printf("Volume: %i", player->volume);
+
+  // TODO emit event
+}
+
+void player_inc_volume(player_t *player) {
+  player_set_volume(player, player->volume + 1);
+}
+
+void player_dec_volume(player_t *player) {
+  player_set_volume(player, player->volume - 1);
+}
+
+int player_get_volume(player_t *player) {
+  return player->volume;
+}
+
+int player_get_volume_max(player_t *player) {
+  return PLAYER_VOLUME_MAX;
+}
+
+int player_get_volume_limit(player_t *player) {
+  return player->volume_limit;
 }
 
 void try_prepare(player_t *player) {
@@ -189,7 +265,7 @@ void try_prepare(player_t *player) {
 
   SRC_STATE* src_new (int converter_type, int channels, int *error) ;
 
-  create_stream(&player->pulse, &start->ss, &bufattr, player, &callbacks);
+  create_stream(&player->pulse, &start->ss, &bufattr, player, &callbacks, player->volume, player->mute);
 
   pthread_mutex_lock(&player->mutex);
 
@@ -331,7 +407,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable, size_t *written
   if (kalman2d_get_p(&player->timing.pa_filter) < 1e-7 && player->timing.n_delta > 30) {
     clock_ratio = 1.0 / kalman2d_get_v(&player->timing.pa_filter);
 
-    double RATE_UPDATE_INTERVAL = 1e6;
+    double RATE_UPDATE_INTERVAL = 30e6;
 
     double current_rate = (double)player->timing.ss.rate;
     double estimated_rate = current_rate / ((double) RATE_UPDATE_INTERVAL / (RATE_UPDATE_INTERVAL + avg_delta));
@@ -441,6 +517,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable, size_t *written
 }
 
 void print_cache_fixed(player_t *player) {
+	return;
   printf("\033[0;0H");
   print_cache(player->cache);
 }
@@ -603,3 +680,4 @@ void update_pa_filter(player_t *player) {
     kalman2d_run(&player->timing.pa_filter, delta_local, elapsed_audio);
   }
 }
+

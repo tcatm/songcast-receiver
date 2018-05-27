@@ -66,8 +66,20 @@ typedef struct {
   struct timing timing;
   struct remote_clock remote_clock;
   SRC_STATE *src;
+  int volume;
+  int volume_limit;
+  int mute;
 } player_t;
 
 void player_init(player_t *player);
 void player_stop(player_t *player);
 struct missing_frames *handle_frame(player_t *player, ohm1_audio *frame, struct timespec *ts);
+
+void player_set_mute(player_t *player, int mute);
+int player_get_mute(player_t *player);
+void player_set_volume(player_t *player, int volume);
+void player_inc_volume(player_t *player);
+void player_dec_volume(player_t *player);
+int player_get_volume(player_t *player);
+int player_get_volume_max(player_t *player);
+int player_get_volume_limit(player_t *player);

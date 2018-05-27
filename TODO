@@ -66,6 +66,8 @@
 - [ ] fade in once buffer is 100% filled again
 - [ ] when changing PA sinks, invalidate audio_local_ratio!
 - [ ] implement volume control
+        cvolume pulseaudio API kann eine menge, z.b. inc with limit
+	http://wiki.openhome.org/wiki/Av:Developer:VolumeService#SetVolume 
 - [ ] implement just enough of openhome to allow grouping in kazoo. this could happen outside of the c code by controlling using stdio
 
 - [ ] handle halts within stream (songchange in spotify e.g.)

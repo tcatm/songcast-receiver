@@ -22,6 +22,7 @@
 #include "player.h"
 #include "uri.h"
 #include "log.h"
+#include "upnpdevice.h"
 
 #define OHM_NULL_URI "ohm://0.0.0.0:0"
 
@@ -53,9 +54,13 @@ struct ReceiverData {
   struct sockaddr_in *my_slaves;
   struct handler ohm_handler;
 
+  FILE *ctrl_stream;
+
   player_t player;
 };
 
+void set_mute(struct ReceiverData *receiver, int mute);
+void set_volume(struct ReceiverData *receiver, int volume);
 bool goto_uri(struct ReceiverData *receiver, const char *uri_string);
 bool goto_preset(struct ReceiverData *receiver, unsigned int preset);
 void receiver(const char *uri_string, unsigned int preset);
@@ -555,6 +560,44 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
   }
 }
 
+void handle_ctrl_pipe(int fd, uint32_t events, void *userdata) {
+  char buf[256];
+  struct ReceiverData *receiver = userdata;
+  char *s = fgets(buf, sizeof(buf), receiver->ctrl_stream);
+
+  if (s == NULL)
+    error(1, errno, "fgets");
+
+  char *saveptr = NULL, *cmd, *arg;
+
+  cmd = strtok_r(s, " \t\r\n", &saveptr);
+  arg = strtok_r(NULL, " \t\r\n", &saveptr);
+
+  if (cmd == NULL)
+    return;
+
+  if (strcmp(cmd, "stop") == 0)
+    goto_uri(receiver, OHM_NULL_URI);
+
+  if (strcmp(cmd, "preset") == 0 && arg != NULL)
+    goto_preset(receiver, atoi(arg));
+
+  if (strcmp(cmd, "uri") == 0 && arg != NULL)
+    goto_uri(receiver, arg);
+
+  if (strcmp(cmd, "mute") == 0 && arg != NULL)
+    set_mute(receiver, atoi(arg));
+
+  if (strcmp(cmd, "vol") == 0 && arg != NULL)
+    set_volume(receiver, atoi(arg));
+
+  if (strcmp(cmd, "volup") == 0)
+    inc_volume(receiver);
+
+  if (strcmp(cmd, "voldown") == 0)
+    dec_volume(receiver);
+}
+
 void handle_stdin(int fd, uint32_t events, void *userdata) {
   char buf[256];
   struct ReceiverData *receiver = userdata;
@@ -580,8 +623,36 @@ void handle_stdin(int fd, uint32_t events, void *userdata) {
   if (strcmp(cmd, "uri") == 0 && arg != NULL)
     goto_uri(receiver, arg);
 
+  if (strcmp(cmd, "mute") == 0 && arg != NULL)
+    set_mute(receiver, atoi(arg));
+
+  if (strcmp(cmd, "vol") == 0 && arg != NULL)
+    set_volume(receiver, atoi(arg));
+
+  if (strcmp(cmd, "volup") == 0)
+    inc_volume(receiver);
+
+  if (strcmp(cmd, "voldown") == 0)
+    dec_volume(receiver);
+
   if (strcmp(cmd, "quit") == 0)
     exit(1);
+}
+
+void set_mute(struct ReceiverData *receiver, int mute) {
+  player_set_mute(&receiver->player, mute);
+}
+
+void inc_volume(struct ReceiverData *receiver) {
+  player_inc_volume(&receiver->player);
+}
+
+void dec_volume(struct ReceiverData *receiver) {
+  player_dec_volume(&receiver->player);
+}
+
+void set_volume(struct ReceiverData *receiver, int volume) {
+  player_set_volume(&receiver->player, volume);
 }
 
 bool goto_preset(struct ReceiverData *receiver, unsigned int preset) {
@@ -645,7 +716,14 @@ void receiver(const char *uri_string, unsigned int preset) {
     .my_slaves = NULL
   };
 
+  int ctrl_pipe[2];
+
+  if (pipe (ctrl_pipe))
+    error(1, errno, "pipe");
+
   player_init(&receiver.player);
+
+  upnpdevice(&receiver.player, ctrl_pipe[1]);
 
   int maxevents = 64;
   struct epoll_event events[maxevents];
@@ -663,6 +741,16 @@ void receiver(const char *uri_string, unsigned int preset) {
   };
 
   add_fd(receiver.efd, &stdin_handler, EPOLLIN);
+
+  receiver.ctrl_stream = fdopen(ctrl_pipe[0], "r");
+
+  struct handler ctrl_pipe_handler = {
+    .fd = ctrl_pipe[0],
+    .func = handle_ctrl_pipe,
+    .userdata = &receiver,
+  };
+
+  add_fd(receiver.efd, &ctrl_pipe_handler, EPOLLIN);
 
   struct handler ohz_handler = {
     .fd = receiver.ohz_fd,
@@ -762,7 +850,7 @@ int main(int argc, char *argv[]) {
   log_printf("===== START =====");
 
   int c;
-  while ((c = getopt(argc, argv, "p:u:")) != -1)
+  while ((c = getopt(argc, argv, "p:u:d")) != -1)
   switch (c) {
     case 'p':
       preset = atoi(optarg);

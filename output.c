@@ -29,6 +29,7 @@
         }                                                               \
     } while(false);
 
+void volume_to_cvolume(struct pulse *pulse, pa_cvolume *cvolume, int volume);
 
 void context_state_cb(pa_context *context, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
@@ -70,7 +71,7 @@ void stream_state_cb(pa_stream *s, void *mainloop) {
   pa_threaded_mainloop_signal(mainloop, 0);
 }
 
-void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr *bufattr, void *userdata, struct output_cb *callbacks) {
+void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr *bufattr, void *userdata, struct output_cb *callbacks, int volume, int mute) {
   pa_channel_map map;
   assert(pa_channel_map_init_auto(&map, ss->channels, PA_CHANNEL_MAP_DEFAULT));
 
@@ -90,8 +91,11 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
   stream_flags =  PA_STREAM_NOT_MONOTONIC |
                   PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_ADJUST_LATENCY;
 
+  pa_cvolume cvolume;
+  volume_to_cvolume(pulse, &cvolume, volume);
+
   // Connect stream to the default audio output sink
-  assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, NULL, NULL) == 0);
+  assert(pa_stream_connect_playback(pulse->stream, NULL, bufattr, stream_flags, &cvolume, NULL) == 0);
 
   for (;;) {
     pa_stream_state_t state;
@@ -104,6 +108,8 @@ void create_stream(struct pulse *pulse, pa_sample_spec *ss, const pa_buffer_attr
     /* Wait until the stream has terminated. */
     pa_threaded_mainloop_wait(pulse->mainloop);
   }
+
+  output_set_mute(pulse, mute);
 
   pa_threaded_mainloop_unlock(pulse->mainloop);
 }
@@ -165,4 +171,37 @@ void stop_stream(struct pulse *pulse) {
   pulse->stream = NULL;
 
   log_printf("Stream disconnected.");
+}
+
+void output_set_mute(struct pulse *pulse, int mute) {
+  pa_threaded_mainloop_lock(pulse->mainloop);
+  uint32_t idx = pa_stream_get_index(pulse->stream);
+  pa_context_set_sink_input_mute(pulse->context, idx, mute, NULL, NULL);
+  pa_threaded_mainloop_unlock(pulse->mainloop);
+}
+
+void volume_to_cvolume(struct pulse *pulse, pa_cvolume *cvolume, int volume) {
+  pa_cvolume_init(cvolume);
+
+   if (volume > 100)
+    volume = 100;
+
+  if (volume < 0)
+    volume = 0; 
+
+  pa_volume_t volume_t = PA_VOLUME_NORM / 100.0 * volume + 0.5;
+
+  const pa_sample_spec *ss = pa_stream_get_sample_spec(pulse->stream);
+
+  pa_cvolume_set(cvolume, ss->channels, volume_t);
+}
+
+void output_set_volume(struct pulse *pulse, int volume) {
+  pa_threaded_mainloop_lock(pulse->mainloop);
+  uint32_t idx = pa_stream_get_index(pulse->stream);
+  pa_cvolume cvolume;
+  volume_to_cvolume(pulse, &cvolume, volume);
+
+  pa_context_set_sink_input_volume(pulse->context, idx, &cvolume, NULL, NULL);
+  pa_threaded_mainloop_unlock(pulse->mainloop);
 }
