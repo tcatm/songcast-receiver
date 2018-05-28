@@ -23,6 +23,7 @@ public:
     TBool SetPropertyTransportState(const Brx& aValue);
     TBool SetPropertyProtocolInfo(const Brx& aValue);
     void SetSetSenderCallback(CallbackReceiver1SetSender aCallback, void* aPtr);
+    void SetStopCallback(CallbackReceiver1Stop aCallback, void* aPtr);
 private:
     void EnableActionPlay();
     void EnableActionStop();
@@ -39,6 +40,9 @@ private:
 private:
     CallbackReceiver1SetSender iCallbackSetSender;
     void *iPtrSetSender;
+
+    CallbackReceiver1Stop iCallbackStop;
+    void *iPtrStop;
 
     PropertyString* iPropertyUri;
     PropertyString* iPropertyMetadata;
@@ -172,7 +176,11 @@ void DvProviderOpenhomeOrgReceiver1C::DoStop(IDviInvocation& aInvocation)
     aInvocation.InvocationReadEnd();
     DviInvocation invocation(aInvocation);
 
-    printf("Receiver Stop\n");
+    ASSERT(iCallbackStop != NULL);
+    if (0 != iCallbackStop(iPtrStop, invocationC, invocationCPtr)) {
+        invocation.Error(502, Brn("Action failed"));
+        return;
+    }
 
     invocation.StartResponse();
     invocation.EndResponse();
@@ -199,7 +207,6 @@ void DvProviderOpenhomeOrgReceiver1C::DoSetSender(IDviInvocation& aInvocation)
 
     SetPropertyString(*iPropertyUri, Uri);
     SetPropertyString(*iPropertyMetadata, Metadata);
-    SetPropertyString(*iPropertyTransportState, Brhz("Playing"));
 
     invocation.StartResponse();
     invocation.EndResponse();
@@ -268,6 +275,12 @@ void DvProviderOpenhomeOrgReceiver1C::SetSetSenderCallback(CallbackReceiver1SetS
     iPtrSetSender = aPtr;
 }
 
+void DvProviderOpenhomeOrgReceiver1C::SetStopCallback(CallbackReceiver1Stop aCallback, void* aPtr)
+{
+    iCallbackStop = aCallback;
+    iPtrStop = aPtr;
+}
+
 THandle STDCALL DvProviderOpenhomeOrgReceiver1Create(DvDeviceC aDevice)
 {
     return new DvProviderOpenhomeOrgReceiver1C(aDevice);
@@ -283,7 +296,13 @@ void STDCALL DvProviderAvOpenhomeOrgReceiver1SetSetSenderCallback(THandle aProvi
     reinterpret_cast<DvProviderOpenhomeOrgReceiver1C*>(aProvider)->SetSetSenderCallback(aCallback, aPtr);
 }
 
-//void STDCALL DvProviderAvOpenhomeOrgReceiver1SetStopCallback(THandle aProvider, CallbackReceiver1Stop aCallback, void* aPtr)
-//{
-//    reinterpret_cast<DvProviderOpenhomeOrgVolume1C*>(aProvider)->StopCallback(aCallback, aPtr);
-//}
+void STDCALL DvProviderAvOpenhomeOrgReceiver1SetStopCallback(THandle aProvider, CallbackReceiver1Stop aCallback, void* aPtr)
+{
+    reinterpret_cast<DvProviderOpenhomeOrgReceiver1C*>(aProvider)->SetStopCallback(aCallback, aPtr);
+}
+
+void STDCALL DvProviderAvOpenhomeOrgReceiver1SetPropertyTransportState(THandle aProvider, const char *aValue)
+{
+    Brhz buf(aValue);
+    reinterpret_cast<DvProviderOpenhomeOrgReceiver1C*>(aProvider)->SetPropertyTransportState(buf);
+}

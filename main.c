@@ -23,6 +23,7 @@
 #include "uri.h"
 #include "log.h"
 #include "upnpdevice.h"
+#include "ipc.h"
 
 #define OHM_NULL_URI "ohm://0.0.0.0:0"
 
@@ -53,8 +54,6 @@ struct ReceiverData {
   int slave_count;
   struct sockaddr_in *my_slaves;
   struct handler ohm_handler;
-
-  FILE *ctrl_stream;
 
   player_t player;
 };
@@ -561,41 +560,38 @@ void handle_ohm(int fd, uint32_t events, void *userdata) {
 }
 
 void handle_ctrl_pipe(int fd, uint32_t events, void *userdata) {
-  char buf[256];
+  struct ReceiverMessage msg;
   struct ReceiverData *receiver = userdata;
-  char *s = fgets(buf, sizeof(buf), receiver->ctrl_stream);
 
-  if (s == NULL)
-    error(1, errno, "fgets");
+  size_t s = read(fd, &msg, sizeof(msg));
 
-  char *saveptr = NULL, *cmd, *arg;
+  if (s != sizeof(msg))
+    error(1, errno, "fread");
 
-  cmd = strtok_r(s, " \t\r\n", &saveptr);
-  arg = strtok_r(NULL, " \t\r\n", &saveptr);
+  if (msg.cmd == PLAY) {
+    goto_uri(receiver, msg.argp);
+    free(msg.argp);
+  }
 
-  if (cmd == NULL)
-    return;
-
-  if (strcmp(cmd, "stop") == 0)
+  if (msg.cmd == STOP) {
     goto_uri(receiver, OHM_NULL_URI);
+  }
 
-  if (strcmp(cmd, "preset") == 0 && arg != NULL)
-    goto_preset(receiver, atoi(arg));
-
-  if (strcmp(cmd, "uri") == 0 && arg != NULL)
-    goto_uri(receiver, arg);
-
-  if (strcmp(cmd, "mute") == 0 && arg != NULL)
-    set_mute(receiver, atoi(arg));
-
-  if (strcmp(cmd, "vol") == 0 && arg != NULL)
-    set_volume(receiver, atoi(arg));
-
-  if (strcmp(cmd, "volup") == 0)
+  if (msg.cmd == VOLUME_INC) {
     inc_volume(receiver);
+  }
 
-  if (strcmp(cmd, "voldown") == 0)
+  if (msg.cmd == VOLUME_DEC) {
     dec_volume(receiver);
+  }
+
+  if (msg.cmd == SET_VOLUME) {
+    set_volume(receiver, msg.arg);
+  }
+
+  if (msg.cmd == SET_MUTE) {
+    set_mute(receiver, msg.arg);
+  }
 }
 
 void handle_stdin(int fd, uint32_t events, void *userdata) {
@@ -689,8 +685,8 @@ bool goto_uri(struct ReceiverData *receiver, const char *uri_string) {
     receiver->preset = 0;
 
     if (receiver->uri == NULL || !uri_equal(uri, receiver->uri)) {
-      free_uri(receiver->uri);
       stop_playback(receiver);
+      free_uri(receiver->uri);
       receiver->uri = uri;
 
       if (!is_ohm_null_uri(uri))
@@ -721,9 +717,11 @@ void receiver(const char *uri_string, unsigned int preset) {
   if (pipe (ctrl_pipe))
     error(1, errno, "pipe");
 
+  upnpdevice(&receiver.player, &receiver.player.dctx, ctrl_pipe[1]);
+
   player_init(&receiver.player);
 
-  upnpdevice(&receiver.player, ctrl_pipe[1]);
+  device_enable(&receiver.player.dctx);
 
   int maxevents = 64;
   struct epoll_event events[maxevents];
@@ -741,8 +739,6 @@ void receiver(const char *uri_string, unsigned int preset) {
   };
 
   add_fd(receiver.efd, &stdin_handler, EPOLLIN);
-
-  receiver.ctrl_stream = fdopen(ctrl_pipe[0], "r");
 
   struct handler ctrl_pipe_handler = {
     .fd = ctrl_pipe[0],

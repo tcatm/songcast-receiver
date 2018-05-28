@@ -4,107 +4,134 @@
 #include "DvVolume.h"
 #include "DvInfo.h"
 #include "player.h"
+#include "upnpdevice.h"
+#include "ipc.h"
 
-struct VolumeCtx {
-    player_t *player;
-    THandle volume;
-};
+void device_set_volume_limit(struct DeviceContext *dctx, unsigned int volume) {
+    int changed;
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeLimit(dctx->volume, volume, &changed);
+}
 
-struct ReceiverCtx {
-    player_t *player;
-    FILE *ctrl_stream;
-};
+void device_set_volume(struct DeviceContext *dctx, unsigned int volume) {
+    int changed;
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolume(dctx->volume, volume, &changed);
+}
+
+void device_set_mute(struct DeviceContext *dctx, unsigned int mute) {
+    int changed;
+    DvProviderAvOpenhomeOrgVolume1SetPropertyMute(dctx->volume, mute, &changed);
+}
+
+void device_set_transport_state(struct DeviceContext *dctx, const char *state) {
+    DvProviderAvOpenhomeOrgReceiver1SetPropertyTransportState(dctx->receiver, state);
+}
 
 int32_t setsender_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, char* aUri) {
-    struct ReceiverCtx *rctx = aPtr;
+    struct DeviceContext *dctx = aPtr;
 
-    const char *cmd = "uri ";
+    char *uri = strdup(aUri);
 
-    int l = strlen(aUri);
+    struct ReceiverMessage msg = {
+        .cmd = PLAY,
+        .argp = uri
+    };
 
-    char *s = malloc(l + strlen(cmd) + 1);
+    write(dctx->ctrl_fd, &msg, sizeof(msg));
 
-    strcpy(s, cmd);
-    strcat(s, aUri);
+    return 0;
+}
 
-    fputs(s, rctx->ctrl_stream);
-    fflush(rctx->ctrl_stream);
+int32_t stop_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr) {
+    struct DeviceContext *dctx = aPtr;
 
-    free(s);
+    struct ReceiverMessage msg = {
+        .cmd = STOP
+    };
+
+    write(dctx->ctrl_fd, &msg, sizeof(msg));
+
     return 0;
 }
 
 int32_t volume_characteristics_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, uint32_t *aVolumeMax, uint32_t *aVolumeUnity, uint32_t *aVolumeSteps, uint32_t *aVolumeMilliDbPerStep, uint32_t *aBalanceMax, uint32_t *aFadeMax) {
-    struct VolumeCtx *vctx = aPtr;
+    struct DeviceContext *dctx = aPtr;
 
-    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeMax(vctx->volume, aVolumeMax);
-    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeUnity(vctx->volume, aVolumeUnity);
-    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeSteps(vctx->volume, aVolumeSteps);
-    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeMilliDbPerStep(vctx->volume, aVolumeMilliDbPerStep);
-    DvProviderAvOpenhomeOrgVolume1GetPropertyBalanceMax(vctx->volume, aBalanceMax);
-    DvProviderAvOpenhomeOrgVolume1GetPropertyFadeMax(vctx->volume, aFadeMax);
+    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeMax(dctx->volume, aVolumeMax);
+    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeUnity(dctx->volume, aVolumeUnity);
+    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeSteps(dctx->volume, aVolumeSteps);
+    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeMilliDbPerStep(dctx->volume, aVolumeMilliDbPerStep);
+    DvProviderAvOpenhomeOrgVolume1GetPropertyBalanceMax(dctx->volume, aBalanceMax);
+    DvProviderAvOpenhomeOrgVolume1GetPropertyFadeMax(dctx->volume, aFadeMax);
 
     return 0;
 }
 
 int32_t volume_set_volume_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, uint32_t aValue) {
-    struct VolumeCtx *vctx = aPtr;
-    int changed;
-    player_set_volume(vctx->player, aValue);
-    uint32_t newVolume = player_get_volume(vctx->player);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolume(vctx->volume, newVolume, &changed);
+    struct DeviceContext *dctx = aPtr;
+  
+    struct ReceiverMessage msg = {
+        .cmd = SET_VOLUME,
+        .arg = aValue
+    };
+
+    write(dctx->ctrl_fd, &msg, sizeof(msg));
 
     return 0;
 }
 
 int32_t volume_volume_inc_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr) {
-    struct VolumeCtx *vctx = aPtr;
-    int changed;
-    uint32_t aValue;
-    player_inc_volume(vctx->player);
-    aValue = player_get_volume(vctx->player);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolume(vctx->volume, aValue, &changed);
+    struct DeviceContext *dctx = aPtr;
+
+    struct ReceiverMessage msg = {
+        .cmd = VOLUME_INC
+    };
+
+    write(dctx->ctrl_fd, &msg, sizeof(msg));
 
     return 0;
 }
 
 int32_t volume_volume_dec_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr) {
-    struct VolumeCtx *vctx = aPtr;
-    int changed;
-    uint32_t aValue;
-    player_dec_volume(vctx->player);
-    aValue = player_get_volume(vctx->player);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolume(vctx->volume, aValue, &changed);
+    struct DeviceContext *dctx = aPtr;
+  
+    struct ReceiverMessage msg = {
+        .cmd = VOLUME_DEC
+    };
+
+    write(dctx->ctrl_fd, &msg, sizeof(msg));
 
     return 0;
 }
 
 int32_t volume_volume_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, uint32_t *aValue) {
-    struct VolumeCtx *vctx = aPtr;
-    DvProviderAvOpenhomeOrgVolume1GetPropertyVolume(vctx->volume, aValue);
+    struct DeviceContext *dctx = aPtr;
+    DvProviderAvOpenhomeOrgVolume1GetPropertyVolume(dctx->volume, aValue);
 
     return 0;
 }
 int32_t volume_volume_limit_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, uint32_t *aValue) {
-    struct VolumeCtx *vctx = aPtr;
-    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeLimit(vctx->volume, aValue);
+    struct DeviceContext *dctx = aPtr;
+    DvProviderAvOpenhomeOrgVolume1GetPropertyVolumeLimit(dctx->volume, aValue);
 
     return 0;
 }
 
 int32_t volume_set_mute_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, uint32_t aValue) {
-    struct VolumeCtx *vctx = aPtr;
-    int changed;
-    player_set_mute(vctx->player, aValue);
-    uint32_t newMute = player_get_mute(vctx->player);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyMute(vctx->volume, newMute, &changed);
+    struct DeviceContext *dctx = aPtr;
+  
+    struct ReceiverMessage msg = {
+        .cmd = SET_MUTE,
+        .arg = aValue
+    };
+
+    write(dctx->ctrl_fd, &msg, sizeof(msg));
 
     return 0;   
 }
 
 int32_t volume_mute_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, uint32_t *aValue) {
-    struct VolumeCtx *vctx = aPtr;
-    DvProviderAvOpenhomeOrgVolume1GetPropertyMute(vctx->volume, aValue);
+    struct DeviceContext *dctx = aPtr;
+    DvProviderAvOpenhomeOrgVolume1GetPropertyMute(dctx->volume, aValue);
 
     return 0;
 }
@@ -221,25 +248,24 @@ int32_t setsourceindexbyname_cb(void *aPtr, IDvInvocationC *aInvocation, void *a
     return 0;
 }
 
-void upnpdevice(player_t *player, int ctrl_fd) {
-
-    FILE *ctrl_stream;
-    ctrl_stream = fdopen(ctrl_fd, "w");
-
+void upnpdevice(player_t *player, struct DeviceContext *dctx, int ctrl_fd) {
     int changed;
+
     OhNetHandleInitParams initParams = OhNetInitParamsCreate();
     OhNetLibraryInitialise(initParams);
     OhNetLibraryStartDv();
 
-    DvDeviceC device = DvDeviceStandardCreateNoResources("fasdfkasdjfkl");
-    DvDeviceSetAttribute(device, "Upnp.Domain", "av.openhome.org");
-    DvDeviceSetAttribute(device, "Upnp.Type", "Source");
-    DvDeviceSetAttribute(device, "Upnp.Version", "1");
-    DvDeviceSetAttribute(device, "Upnp.Manufacturer", "OpenHome");
-    DvDeviceSetAttribute(device, "Upnp.FriendlyName", "Spielzimmer");
-    DvDeviceSetAttribute(device, "Upnp.ModelName", "Songcast Receiver");
+    dctx->ctrl_fd = ctrl_fd;
 
-    THandle product = DvProviderAvOpenhomeOrgProduct1Create(device);
+    dctx->device = DvDeviceStandardCreateNoResources("fasdfkasdjfkl");
+    DvDeviceSetAttribute(dctx->device, "Upnp.Domain", "av.openhome.org");
+    DvDeviceSetAttribute(dctx->device, "Upnp.Type", "Source");
+    DvDeviceSetAttribute(dctx->device, "Upnp.Version", "1");
+    DvDeviceSetAttribute(dctx->device, "Upnp.Manufacturer", "OpenHome");
+    DvDeviceSetAttribute(dctx->device, "Upnp.FriendlyName", "Spielzimmer");
+    DvDeviceSetAttribute(dctx->device, "Upnp.ModelName", "Songcast Receiver");
+
+    THandle product = DvProviderAvOpenhomeOrgProduct1Create(dctx->device);
 
     DvProviderAvOpenhomeOrgProduct1EnablePropertySourceCount(product);
     DvProviderAvOpenhomeOrgProduct1SetPropertySourceCount(product, 1, &changed);
@@ -303,56 +329,49 @@ void upnpdevice(player_t *player, int ctrl_fd) {
     DvProviderAvOpenhomeOrgProduct1EnableActionStandby(product, standby_cb, product);
     DvProviderAvOpenhomeOrgProduct1EnableActionSetStandby(product, set_standby_cb, product);
 
-    THandle info = DvProviderOpenhomeOrgInfo1Create(device);
-    THandle time = DvProviderOpenhomeOrgTime1Create(device);
-    THandle receiver = DvProviderOpenhomeOrgReceiver1Create(device);
+    THandle info = DvProviderOpenhomeOrgInfo1Create(dctx->device);
+    THandle time = DvProviderOpenhomeOrgTime1Create(dctx->device);
+    dctx->receiver = DvProviderOpenhomeOrgReceiver1Create(dctx->device);
 
-    struct ReceiverCtx rctx = {
-        .player = player,
-        .ctrl_stream = ctrl_stream,
-    };
+    DvProviderAvOpenhomeOrgReceiver1SetSetSenderCallback(dctx->receiver, setsender_cb, dctx);
+    DvProviderAvOpenhomeOrgReceiver1SetStopCallback(dctx->receiver, stop_cb, dctx);
 
-    DvProviderAvOpenhomeOrgReceiver1SetSetSenderCallback(receiver, setsender_cb, &rctx);
+    dctx->volume = DvProviderOpenhomeOrgVolume1Create(dctx->device);
 
-    THandle volume = DvProviderOpenhomeOrgVolume1Create(device);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolume(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyMute(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyBalance(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyFade(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeMax(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeLimit(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeUnity(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeSteps(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeMilliDbPerStep(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyBalanceMax(dctx->volume);
+    DvProviderAvOpenhomeOrgVolume1EnablePropertyFadeMax(dctx->volume);
 
-    struct VolumeCtx vctx = {
-        .player = player,
-        .volume = volume,
-    };
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolume(dctx->volume, 0, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyMute(dctx->volume, 0, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyBalance(dctx->volume, 0, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyFade(dctx->volume, 0, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeMax(dctx->volume, 100, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeLimit(dctx->volume, 0, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeUnity(dctx->volume, 100, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeSteps(dctx->volume, 1, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeMilliDbPerStep(dctx->volume, 1024, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyBalanceMax(dctx->volume, 0, &changed);
+    DvProviderAvOpenhomeOrgVolume1SetPropertyFadeMax(dctx->volume, 0, &changed);
 
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolume(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyMute(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyBalance(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyFade(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeMax(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeLimit(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeUnity(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeSteps(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyVolumeMilliDbPerStep(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyBalanceMax(volume);
-    DvProviderAvOpenhomeOrgVolume1EnablePropertyFadeMax(volume);
+    DvProviderAvOpenhomeOrgVolume1EnableActionCharacteristics(dctx->volume, volume_characteristics_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionSetVolume(dctx->volume, volume_set_volume_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionVolumeInc(dctx->volume, volume_volume_inc_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionVolumeDec(dctx->volume, volume_volume_dec_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionVolume(dctx->volume, volume_volume_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionVolumeLimit(dctx->volume, volume_volume_limit_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionSetMute(dctx->volume, volume_set_mute_cb, dctx);
+    DvProviderAvOpenhomeOrgVolume1EnableActionMute(dctx->volume, volume_mute_cb, dctx);
+}
 
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolume(volume, player_get_volume(player), &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyMute(volume, player_get_mute(player), &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyBalance(volume, 0, &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyFade(volume, 0, &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeMax(volume, player_get_volume_max(player), &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeLimit(volume, player_get_volume_limit(player), &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeUnity(volume, player_get_volume_max(player), &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeSteps(volume, 1, &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyVolumeMilliDbPerStep(volume, 1024, &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyBalanceMax(volume, 0, &changed);
-    DvProviderAvOpenhomeOrgVolume1SetPropertyFadeMax(volume, 0, &changed);
-
-    DvProviderAvOpenhomeOrgVolume1EnableActionCharacteristics(volume, volume_characteristics_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionSetVolume(volume, volume_set_volume_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionVolumeInc(volume, volume_volume_inc_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionVolumeDec(volume, volume_volume_dec_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionVolume(volume, volume_volume_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionVolumeLimit(volume, volume_volume_limit_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionSetMute(volume, volume_set_mute_cb, &vctx);
-    DvProviderAvOpenhomeOrgVolume1EnableActionMute(volume, volume_mute_cb, &vctx);
-
-    DvDeviceSetEnabled(device);
+void device_enable(struct DeviceContext *dctx) {
+    DvDeviceSetEnabled(dctx->device);
 }

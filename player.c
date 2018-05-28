@@ -123,13 +123,36 @@ void set_volume_limit(player_t *player, int limit) {
   if (player->volume > limit)
     player_set_volume(player, limit);
 
-  // TODO emit event
+  device_set_volume_limit(&player->dctx, limit);
 }
 
 void set_state(player_t *player, enum PlayerState new_state) {
   log_printf("--> State change: %s to %s <--", print_state(player->state), print_state(new_state));
 
   player->state = new_state;
+
+  char *transport_state;
+
+  transport_state = "Stopped";
+
+  switch (player->state) {
+    case STOPPED:
+      transport_state = "Stopped";
+      break;
+    case STARTING:
+      transport_state = "Buffering";
+      break;
+    case PLAYING:
+      transport_state = "Playing";
+      break;
+    case HALT:
+      transport_state = "Stopped";
+      break;
+    default:
+      assert(false && "UNKNOWN STATE");
+  }
+
+  device_set_transport_state(&player->dctx, transport_state);
 }
 
 void reset_remote_clock(struct remote_clock *clock) {
@@ -176,12 +199,12 @@ void player_stop(player_t *player) {
 void player_set_mute(player_t *player, int mute) {
   player->mute = mute;
 
+  device_set_mute(&player->dctx, mute);
+
   if (player->state != PLAYING)
     return;
-
+  
   output_set_mute(&player->pulse, mute);
-
-  // TODO emit event
 }
 
 int player_get_mute(player_t *player) {
@@ -202,7 +225,7 @@ void player_set_volume(player_t *player, int volume) {
 
   log_printf("Volume: %i", player->volume);
 
-  // TODO emit event
+  device_set_volume(&player->dctx, player->volume);
 }
 
 void player_inc_volume(player_t *player) {

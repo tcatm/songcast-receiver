@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <samplerate.h>
 
+#include <OpenHome/Net/C/DvDevice.h>
+
 #include "ohm_v1.h"
 #include "output.h"
 #include "cache.h"
@@ -24,6 +26,13 @@ enum PlayerState {STOPPED, STARTING, PLAYING, HALT};
   HALT
     The stream must be stopped.
 */
+
+struct DeviceContext {
+    DvDeviceC device;
+    THandle volume;
+    THandle receiver;
+    int ctrl_fd;
+};
 
 struct remote_clock {
   unsigned int ts_remote_last;
@@ -59,6 +68,7 @@ struct timing {
 };
 
 typedef struct {
+  struct DeviceContext dctx;
   pthread_mutex_t mutex;
   enum PlayerState state;
   struct cache *cache;

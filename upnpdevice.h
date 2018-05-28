@@ -2,4 +2,4 @@
 
 #include "player.h"
 
-void upnpdevice(player_t *player, int ctrl_fd);
+void upnpdevice(player_t *player, struct DeviceContext *dctx, int ctrl_fd);
