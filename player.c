@@ -12,6 +12,7 @@
 #include <samplerate.h>
 
 #include "player.h"
+#include "upnpdevice.h"
 #include "output.h"
 #include "cache.h"
 #include "log.h"
@@ -36,6 +37,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable, size_t *written
 void write_data(player_t *player, pa_stream *s, size_t request);
 void set_state(player_t *player, enum PlayerState new_state);
 void update_pa_filter(player_t *player);
+void print_cache_fixed(player_t *player);
 
 // callbacks
 void write_cb(pa_stream *s, size_t request, void *userdata) {
@@ -483,7 +485,7 @@ void play_audio(player_t *player, pa_stream *s, size_t writable, size_t *written
 
     src_set_ratio(player->src, ratio);
 
-    pa_stream_begin_write(s, &src_data.data_out, &out_size);
+    pa_stream_begin_write(s, (void**)&src_data.data_out, &out_size);
 
     src_data.output_frames = out_size / frame_size;
 

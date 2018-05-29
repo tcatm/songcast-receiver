@@ -1,3 +1,5 @@
+#include <stdio.h>
+
 #include "kalman.h"
 
 static mat2d mat2d_transpose(mat2d m) {
@@ -14,7 +16,7 @@ static mat2d mat2d_mul(mat2d a, mat2d b) {
 }
 
 void print_mat2d(mat2d m) {
-  union vec4d *v = &m;
+  union vec4d *v = (union vec4d*)&m;
   printf("⎡%f\t%f⎤\n⎣%f\t%f⎦\n", v->d[0], v->d[1], v->d[2], v->d[3]);
 }
 
@@ -43,17 +45,17 @@ void kalman2d_run(kalman2d_t *k, double dt, double z) {
 }
 
 double kalman2d_get_x(kalman2d_t *k) {
-  union vec4d *v = &k->X;
+  union vec4d *v = (union vec4d*)&k->X;
   return v->d[0];
 }
 
 double kalman2d_get_v(kalman2d_t *k) {
-  union vec4d *v = &k->X;
+  union vec4d *v = (union vec4d*)&k->X;
   return v->d[2];
 }
 
 double kalman2d_get_p(kalman2d_t *k) {
-  union vec4d *v = &k->P;
+  union vec4d *v = (union vec4d*)&k->P;
   return v->d[2];
 }
 

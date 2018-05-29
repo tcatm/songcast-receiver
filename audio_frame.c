@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 
 #include "audio_frame.h"
+#include "log.h"
 
 bool same_format(struct audio_frame *a, struct audio_frame *b) {
   return pa_sample_spec_equal(&a->ss, &b->ss) && a->latency == b->latency;

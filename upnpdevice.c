@@ -1,8 +1,12 @@
 #include <OpenHome/Net/C/DvDevice.h>
 #include <OpenHome/Net/C/DvAvOpenhomeOrgProduct1.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "DvVolume.h"
 #include "DvInfo.h"
+#include "DvReceiver.h"
+#include "DvTime.h"
 #include "player.h"
 #include "upnpdevice.h"
 #include "ipc.h"
@@ -26,7 +30,7 @@ void device_set_transport_state(struct DeviceContext *dctx, const char *state) {
     DvProviderAvOpenhomeOrgReceiver1SetPropertyTransportState(dctx->receiver, state);
 }
 
-int32_t setsender_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, char* aUri) {
+int32_t setsender_cb(void* aPtr, IDvInvocationC* aInvocation, void* aInvocationPtr, const char* aUri) {
     struct DeviceContext *dctx = aPtr;
 
     char *uri = strdup(aUri);

@@ -60,6 +60,8 @@ struct ReceiverData {
 
 void set_mute(struct ReceiverData *receiver, int mute);
 void set_volume(struct ReceiverData *receiver, int volume);
+void inc_volume(struct ReceiverData *receiver);
+void dec_volume(struct ReceiverData *receiver);
 bool goto_uri(struct ReceiverData *receiver, const char *uri_string);
 bool goto_preset(struct ReceiverData *receiver, unsigned int preset);
 void receiver(const char *uri_string, unsigned int preset);
