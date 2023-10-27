@@ -1,0 +1,10 @@
+[requires]
+ohnet/1.36.5182
+libxml2/2.11.5
+pulseaudio/14.2
+uriparser/0.9.7
+libsamplerate/0.2.2
+
+[generators]
+CMakeDeps
+CMakeToolchain

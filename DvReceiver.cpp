@@ -10,6 +10,7 @@
 #include <OpenHome/Net/C/DvInvocation.h>
 #include <OpenHome/Net/C/DvInvocationPrivate.h>
 #include <OpenHome/Net/Private/DviStack.h>
+#include <cstdio>
 
 using namespace OpenHome;
 using namespace OpenHome::Net;
